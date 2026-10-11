@@ -1,0 +1,9 @@
+{
+  "name": "拾光 · 个人成长日志",
+  "short_name": "拾光",
+  "display": "standalone",
+  "start_url": "/",
+  "background_color": "#F7F5F1",
+  "theme_color": "#F7F5F1",
+  "icons": []
+}

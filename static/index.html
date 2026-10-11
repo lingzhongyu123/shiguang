@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>拾光 · 个人成长日志</title>
+<meta name="theme-color" content="#F7F5F1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="拾光">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="loginPane" class="card" hidden>
+  <h1>拾光</h1>
+  <div class="sub">记录今天,也理解长期的自己</div>
+  <label class="fld" for="pwd">访问密码</label>
+  <input type="password" id="pwd" autocomplete="current-password">
+  <button class="btn" id="btnLogin" style="width:100%">进入</button>
+  <p class="hint" id="loginErr" style="margin-top:10px" hidden></p>
+</div>
+
+<div class="page" id="app" hidden>
+<header class="app">
+  <h1>拾光</h1>
+  <div class="sub">记录今天,也理解长期的自己</div>
+</header>
+
+<!-- 记录 -->
+<section id="pane-record" class="pane">
+  <div class="card">
+    <div class="greet" id="greet"></div>
+    <div class="ask">有什么想记录的?</div>
+    <p class="hint">今天做了什么、遇到什么问题、有什么想法……直接说就好,不需要提前组织语言。</p>
+    <label class="fld" for="inMode">处理模式</label>
+    <select id="inMode">
+      <option value="">默认 · 完整五段流程</option>
+      <option value="/只润色">/只润色 · 仅整理正文</option>
+      <option value="/快速">/快速 · 整理 + 总结 + 一条建议</option>
+      <option value="/深度复盘">/深度复盘 · 详细分析</option>
+      <option value="/更新记忆">/更新记忆 · 集中筛选记忆</option>
+      <option value="/整理计划">/整理计划 · 提取目标与行动项</option>
+      <option value="/周总结">/周总结 · 汇总近期日志</option>
+      <option value="/月总结">/月总结 · 阶段变化评估</option>
+      <option value="/查看画像">/查看画像 · 输出当前画像</option>
+    </select>
+    <label class="fld" for="inRaw">说一段,或粘贴口述文字</label>
+    <textarea id="inRaw" rows="7" placeholder="口述原文、语音转文字都行,想到哪说到哪……&#10;/周总结、/查看画像等模式可以不填,直接提交。"></textarea>
+    <button class="btn" id="btnProcess">提交并处理</button>
+    <p class="hint" id="procHint">提交后由服务端的 GLM 自动整理,约需十几秒。</p>
+  </div>
+</section>
+
+<!-- 日志 -->
+<section id="pane-log" class="pane" hidden>
+  <div id="logList"></div>
+  <div class="card">
+    <span class="chip acc" style="margin:0 0 6px">数据自主</span>
+    <div class="row">
+      <a class="btn ghost small" href="/api/export/md" download>导出 Markdown</a>
+      <a class="btn ghost small" href="/api/export/json" download>导出 JSON</a>
+      <button class="btn ghost small" id="btnImport">导入备份</button>
+      <button class="btn danger small" id="btnLogout">退出登录</button>
+    </div>
+    <p class="hint" style="margin:8px 0 0">数据存在服务器数据库,同时请定期导出副本留存。</p>
+  </div>
+  <input type="file" id="fileImport" accept=".json" hidden>
+</section>
+
+<!-- 记忆 -->
+<section id="pane-mem" class="pane" hidden>
+  <div class="card">
+    <h2 style="font-size:17px">待审核记忆</h2>
+    <p class="hint" style="margin:4px 0 8px">AI 提出的记忆先在这里等你的确认:单次出现的观察不会被直接写成你的长期特征。</p>
+    <div id="pendList"></div>
+  </div>
+  <div class="card">
+    <h2 style="font-size:17px">行动事项</h2>
+    <div class="row" style="margin-bottom:4px">
+      <input type="text" id="todoNew" placeholder="添加待办…" style="flex:1;margin:0">
+      <input type="date" id="todoDue" style="width:auto;margin:0">
+      <button class="btn small" id="btnTodoAdd">添加</button>
+    </div>
+    <div id="todoList"></div>
+  </div>
+</section>
+
+<!-- 画像 -->
+<section id="pane-profile" class="pane" hidden>
+  <div class="card profile-block" id="profileView"></div>
+  <div class="card">
+    <span class="chip acc" style="margin:0 0 6px">手动修订</span>
+    <label class="fld" for="profileEdit">档案随你确认的记忆自动累积,也可以直接改</label>
+    <textarea id="profileEdit" rows="12"></textarea>
+    <button class="btn" id="btnProfileSave">保存档案</button>
+  </div>
+</section>
+</div>
+
+<nav class="tabs" id="navTabs" hidden>
+  <button data-pane="record" class="active"><span class="ic">✎</span>记录</button>
+  <button data-pane="log"><span class="ic">☰</span>日志</button>
+  <button data-pane="mem"><span class="ic">◈</span>记忆</button>
+  <button data-pane="profile"><span class="ic">◉</span>画像</button>
+</nav>
+<div class="toast" id="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
