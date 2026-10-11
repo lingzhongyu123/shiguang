@@ -90,7 +90,8 @@ def _unesc(s):
     try:
         return json.loads('"' + s + '"')
     except ValueError:
-        return s.replace("\\n", "\n").replace('\\"', '"')
+        return (s.replace("\\n", "\n").replace('\\"', '"')
+                .replace("\\/", "/").replace("\\t", "\t"))
 
 
 def _salvage_fields(text):
