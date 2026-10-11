@@ -95,6 +95,51 @@ function greet() {
   var g = h < 5 ? "夜深了" : h < 11 ? "早上好" : h < 14 ? "中午好" : h < 18 ? "下午好" : "晚上好";
   $("greet").innerHTML = g + ",今天 · <b>" + (now.getMonth() + 1) + "月" + now.getDate() + "日 星期" + wd + "</b>";
 }
+/* 任务轮询:提交与页面重开后的恢复共用。
+   btn 传 null 表示后台恢复(不锁按钮)。 */
+function pollJob(jid, btn) {
+  try { localStorage.setItem("sg_job", JSON.stringify({ id: jid, t: Date.now() })); } catch (e) {}
+  var errs = 0;  // 网络闪断容忍:连续 3 次失败才放弃
+  var poll = setInterval(function () {
+    api("GET", "/api/jobs/" + jid).then(function (job) {
+      if (job.status === "queued" || job.status === "running") {
+        errs = 0;
+        var stages = { embedding: "正在检索相关记忆…", generating: "GLM 正在整理与提炼…", saving: "正在归档…" };
+        $("procHint").textContent = (btn ? "" : "后台任务:") + (stages[job.stage] || "排队/处理中…");
+        return;
+      }
+      clearInterval(poll);
+      try { localStorage.removeItem("sg_job"); } catch (e) {}
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "提交并处理";
+      }
+      $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
+      if (job.status === "done") {
+        refreshAll();
+        if (btn) switchPane("log");
+        toast("已归档");
+      } else {
+        if (job.raw && !$("inRaw").value.trim()) {
+          $("inRaw").value = job.raw;  // 处理失败时把口述原文找回来,不丢内容
+          toast("处理失败,原文已恢复到输入框:" + (job.error || "未知错误"));
+        } else {
+          toast(job.error || "处理失败");
+        }
+      }
+    }).catch(function (e) {
+      if (++errs < 3 && e.message !== "未登录") return;
+      clearInterval(poll);
+      try { localStorage.removeItem("sg_job"); } catch (e2) {}
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "提交并处理";
+      }
+      toast(e.message);
+    });
+  }, 3000);
+}
+
 $("btnProcess").onclick = function () {
   var raw = $("inRaw").value.trim();
   var mode = $("inMode").value;
@@ -109,38 +154,7 @@ $("btnProcess").onclick = function () {
   $("procHint").textContent = "GLM 正在后台整理,可以去别的页看,好了会提示(约 10–60 秒)。";
   api("POST", "/api/process", { raw: raw, mode: mode }).then(function (r) {
     $("inRaw").value = "";
-    var jid = r.jobId;
-    var poll = setInterval(function () {
-      api("GET", "/api/jobs/" + jid).then(function (job) {
-        if (job.status === "running") {
-          var stages = { embedding: "正在检索相关记忆…", generating: "GLM 正在整理与提炼…", saving: "正在归档…" };
-          $("procHint").textContent = stages[job.stage] || "处理中…";
-          return;
-        }
-        clearInterval(poll);
-        btn.disabled = false;
-        btn.textContent = "提交并处理";
-        $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
-        if (job.status === "done") {
-          refreshAll();
-          switchPane("log");
-          toast("已归档");
-        } else {
-          if (job.raw && !$("inRaw").value.trim()) {
-            $("inRaw").value = job.raw;  // 处理失败时把口述原文找回来,不丢内容
-            toast("处理失败,原文已恢复到输入框:" + (job.error || "未知错误"));
-          } else {
-            toast(job.error || "处理失败");
-          }
-        }
-      }).catch(function (e) {
-        clearInterval(poll);
-        btn.disabled = false;
-        btn.textContent = "提交并处理";
-        $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
-        toast(e.message);
-      });
-    }, 3000);
+    pollJob(r.jobId, btn);
   }).catch(function (e) {
     btn.disabled = false;
     btn.textContent = "提交并处理";
@@ -484,5 +498,16 @@ $("fileImport").onchange = function (e) {
 greet();
 fetch("/api/profile").then(function (r) {
   if (r.status === 401) showLogin();
-  else { showApp(); refreshAll(); }
+  else {
+    showApp();
+    refreshAll();
+    // 恢复上次未完成的任务(30 分钟内):页面关闭/闪断后继续等结果
+    try {
+      var j = JSON.parse(localStorage.getItem("sg_job") || "null");
+      if (j && j.id && Date.now() - j.t < 30 * 60 * 1000) {
+        $("procHint").textContent = "发现上次未完成的任务,正在续接…";
+        pollJob(j.id, null);
+      } else if (j) localStorage.removeItem("sg_job");
+    } catch (e) {}
+  }
 });
