@@ -149,6 +149,19 @@ def get_job(jid: str):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="任务不存在或已过期")
+            # 僵尸任务收割:queued/running 超过 15 分钟(服务重启/进程死亡),标记失败。
+            # 时间比较全部在库端用上海时区完成 —— 进程本地时区不可靠(Render 是 UTC)。
+            if row["status"] in ("queued", "running"):
+                cur.execute(
+                    "UPDATE jobs SET status='failed',"
+                    " error='任务超时(服务可能重启过),请重新提交'"
+                    " WHERE id=%s AND status IN ('queued','running')"
+                    " AND (now() AT TIME ZONE 'Asia/Shanghai') - INTERVAL '15 minutes'"
+                    " > COALESCE(NULLIF(updated_at,''), created_at)::timestamp", (jid,))
+                if cur.rowcount:
+                    conn.commit()
+                    row = {**dict(row), "status": "failed",
+                           "error": "任务超时(服务可能重启过),请重新提交"}
             out = {"id": row["id"], "status": row["status"], "stage": row["stage"],
                    "error": row["error"], "entryId": row["entry_id"],
                    "raw": row["raw"] or ""}
@@ -662,10 +675,16 @@ async def import_backup(request: Request):
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             for e in d.get("entries", []):
-                # 幂等:同一 (date, raw) 的日志已存在则跳过,重复导入不翻倍
+                # 幂等:同一 (date, raw) 的日志已存在则跳过,重复导入不翻倍;
+                # 纯模式条目(raw 为空)用 (date, polished) 判重
                 if e.get("raw"):
                     cur.execute("SELECT 1 FROM entries WHERE date=%s AND raw=%s",
                                 (e.get("date", ""), e.get("raw", "")))
+                    if cur.fetchone():
+                        continue
+                elif e.get("polished"):
+                    cur.execute("SELECT 1 FROM entries WHERE date=%s AND polished=%s",
+                                (e.get("date", ""), e.get("polished", "")))
                     if cur.fetchone():
                         continue
                 cur.execute(
@@ -724,14 +743,28 @@ async def import_backup(request: Request):
                             cur.execute("INSERT INTO archive(section,text) VALUES(%s,%s)",
                                         (sec, item))
             for p in d.get("pending", []):
-                cur.execute("INSERT INTO pending_memories(text,cat) VALUES(%s,%s)",
-                            (p.get("text", ""), p.get("cat", "长期背景")))
-                n_pending += 1
+                if p.get("text"):
+                    cur.execute("SELECT 1 FROM pending_memories WHERE text=%s"
+                                " AND status='pending'", (p.get("text", ""),))
+                    if not cur.fetchone():
+                        cur.execute("INSERT INTO pending_memories(text,cat) VALUES(%s,%s)",
+                                    (p.get("text", ""), p.get("cat", "长期背景")))
+                        n_pending += 1
             for t in d.get("todos", []):
-                cur.execute("INSERT INTO todos(text,due,done) VALUES(%s,%s,%s)",
-                            (t.get("text", ""), t.get("due", ""), 1 if t.get("done") else 0))
-                n_todos += 1
+                if t.get("text"):
+                    cur.execute("SELECT 1 FROM todos WHERE text=%s AND due=%s",
+                                (t.get("text", ""), t.get("due", "")))
+                    if not cur.fetchone():
+                        cur.execute("INSERT INTO todos(text,due,done) VALUES(%s,%s,%s)",
+                                    (t.get("text", ""), t.get("due", ""),
+                                     1 if t.get("done") else 0))
+                        n_todos += 1
             for g in d.get("goals", []):
+                if g.get("title"):
+                    cur.execute("SELECT 1 FROM goals WHERE title=%s AND status=%s",
+                                (g.get("title", ""), g.get("status", "active")))
+                    if cur.fetchone():
+                        continue
                 cur.execute("INSERT INTO goals(title,description,status,progress,deadline) VALUES(%s,%s,%s,%s,%s)",
                             (g.get("title", ""), g.get("description", ""),
                              g.get("status", "active"), int(g.get("progress", 0) or 0),

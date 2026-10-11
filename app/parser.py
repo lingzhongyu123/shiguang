@@ -94,12 +94,35 @@ def _unesc(s):
                 .replace("\\/", "/").replace("\\t", "\t"))
 
 
+_NEXT_KEY = ('summary', 'advice', 'memories', 'profile_delta', 'evidence',
+             'events', 'skip_note')
+
+
+def _salvage_string(text, key):
+    """抠出 "key": "..." 的字符串值。先严格匹配(不含裸引号),
+    再尝试贪婪匹配到 '", "下一键":' 边界 —— 闪存模型常输出含裸引号/裸换行的正文,
+    第一种匹配会提前截断。"""
+    # 优先用 ", 下一键": 边界的贪婪匹配 —— 闪存模型输出常含裸引号,
+    # 严格匹配会在第一个裸引号处提前截断;边界匹配能拿到更完整的正文
+    m = re.search(r'"%s"\s*:\s*"(.*)"\s*,\s*"(?:%s)"\s*:' % (key, "|".join(_NEXT_KEY)),
+                  text, re.S)
+    if m:
+        return _unesc(m.group(1))
+    m = re.search(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % key, text)
+    if m:
+        return _unesc(m.group(1))
+    return None
+
+
 def _salvage_fields(text):
     """JSON 整体解析失败时逐字段打捞,避免把整坨原始 JSON 当正文存档。"""
     out = {}
-    m = re.search(r'"polished"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
-    if m:
-        out["polished"] = _unesc(m.group(1))
+    v = _salvage_string(text, "polished")
+    if v:
+        out["polished"] = v
+    v = _salvage_string(text, "theme")
+    if v:
+        out["theme"] = v
     m = re.search(r'"theme"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
     if m:
         out["theme"] = _unesc(m.group(1))

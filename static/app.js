@@ -105,11 +105,55 @@ function greet() {
   $("greet").innerHTML = g + ",今天 · <b>" + (now.getMonth() + 1) + "月" + now.getDate() + "日 星期" + wd + "</b>";
 }
 /* 任务轮询:提交与页面重开后的恢复共用。
-   btn 传 null 表示后台恢复(不锁按钮)。 */
+   btn 传 null 表示后台恢复(不锁按钮)。
+   全局只允许一个轮询器;轮询 16 分钟强制超时(服务端 15 分钟收割僵尸任务,
+   前端兜底防止极端情况下无限轮询)。 */
+var _poller = null;
+
 function pollJob(jid, btn) {
-  try { localStorage.setItem("sg_job", JSON.stringify({ id: jid, t: Date.now() })); } catch (e) {}
+  if (_poller) { clearInterval(_poller.ival); }
+  var t0 = Date.now();
+  try { localStorage.setItem("sg_job", JSON.stringify({ id: jid, t: t0 })); } catch (e) {}
   var errs = 0;  // 网络闪断容忍:连续 3 次失败才放弃
-  var poll = setInterval(function () {
+  var p = { jid: jid, ival: null };
+  function finish(job, errMsg) {
+    clearInterval(p.ival);
+    if (_poller === p) _poller = null;
+    // 归属检查:只清理自己那个任务的恢复状态(避免旧轮询器删掉新任务的)
+    try {
+      var j = JSON.parse(localStorage.getItem("sg_job") || "null");
+      if (!j || j.id === jid) localStorage.removeItem("sg_job");
+    } catch (e) {}
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "提交并处理";
+    }
+    $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
+    if (job && job.status === "done") {
+      refreshAll();
+      if (btn) switchPane("log");
+      toast("已归档");
+    } else {
+      var raw = job ? job.raw : "";
+      if (raw) {
+        if (!$("inRaw").value.trim()) {
+          $("inRaw").value = raw;  // 处理失败时把口述原文找回来,不丢内容
+          toast("处理失败,原文已恢复到输入框:" + (errMsg || "未知错误"));
+        } else {
+          // 输入框已有新内容,原文暂存,下次清空输入框打开页面时找回
+          try { localStorage.setItem("sg_failed_raw", raw); } catch (e) {}
+          toast("处理失败,原文已暂存(清空输入框后刷新可找回):" + (errMsg || "未知错误"));
+        }
+      } else {
+        toast(errMsg || job && job.error || "处理失败");
+      }
+    }
+  }
+  p.ival = setInterval(function () {
+    if (Date.now() - t0 > 16 * 60 * 1000) {  // 墙钟兜底
+      finish(null, "任务超时(服务可能重启过),请重新提交");
+      return;
+    }
     api("GET", "/api/jobs/" + jid).then(function (job) {
       if (job.status === "queued" || job.status === "running") {
         errs = 0;
@@ -117,36 +161,13 @@ function pollJob(jid, btn) {
         $("procHint").textContent = (btn ? "" : "后台任务:") + (stages[job.stage] || "排队/处理中…");
         return;
       }
-      clearInterval(poll);
-      try { localStorage.removeItem("sg_job"); } catch (e) {}
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = "提交并处理";
-      }
-      $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
-      if (job.status === "done") {
-        refreshAll();
-        if (btn) switchPane("log");
-        toast("已归档");
-      } else {
-        if (job.raw && !$("inRaw").value.trim()) {
-          $("inRaw").value = job.raw;  // 处理失败时把口述原文找回来,不丢内容
-          toast("处理失败,原文已恢复到输入框:" + (job.error || "未知错误"));
-        } else {
-          toast(job.error || "处理失败");
-        }
-      }
+      finish(job, job.error);
     }).catch(function (e) {
       if (++errs < 3 && e.message !== "未登录") return;
-      clearInterval(poll);
-      try { localStorage.removeItem("sg_job"); } catch (e2) {}
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = "提交并处理";
-      }
-      toast(e.message);
+      finish(null, e.message);
     });
   }, 3000);
+  _poller = p;
 }
 
 $("btnProcess").onclick = function () {
@@ -517,6 +538,15 @@ fetch("/api/profile").then(function (r) {
         $("procHint").textContent = "发现上次未完成的任务,正在续接…";
         pollJob(j.id, null);
       } else if (j) localStorage.removeItem("sg_job");
+    } catch (e) {}
+    // 找回上次处理失败时暂存的原文(输入框为空才填,避免覆盖新内容)
+    try {
+      var fr = localStorage.getItem("sg_failed_raw");
+      if (fr && !$("inRaw").value.trim()) {
+        $("inRaw").value = fr;
+        toast("已找回上次处理失败的口述原文,请检查后重新提交");
+      }
+      localStorage.removeItem("sg_failed_raw");
     } catch (e) {}
   }
 });
