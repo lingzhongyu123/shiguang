@@ -1,10 +1,11 @@
 import json
 import os
+import uuid
 from datetime import datetime
 
 import psycopg2.extras
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -75,13 +76,65 @@ class ProcessBody(BaseModel):
     date: str = ""
 
 
+def _job_update(jid, status=None, stage=None, error=None, entry_id=None):
+    with db.db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE jobs SET status=COALESCE(%s,status), stage=COALESCE(%s,stage),"
+                " error=COALESCE(%s,error), entry_id=COALESCE(%s,entry_id),"
+                " updated_at=to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI:SS')"
+                " WHERE id=%s",
+                (status, stage, error, entry_id, jid))
+
+
 @app.post("/api/process", dependencies=[Depends(auth.require_login)])
-def process_log(body: ProcessBody):
+def process_log(body: ProcessBody, tasks: BackgroundTasks):
     if not body.raw and not body.mode:
         raise HTTPException(status_code=400, detail="口述内容和模式至少填一个")
+    jid = uuid.uuid4().hex[:12]
+    with db.db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO jobs(id,status) VALUES(%s,'queued')", (jid,))
+    tasks.add_task(_run_process, jid, body)
+    return {"jobId": jid}
+
+
+@app.get("/api/jobs/{jid}", dependencies=[Depends(auth.require_login)])
+def get_job(jid: str):
+    with db.db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT * FROM jobs WHERE id=%s", (jid,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="任务不存在或已过期")
+            out = {"id": row["id"], "status": row["status"], "stage": row["stage"],
+                   "error": row["error"], "entryId": row["entry_id"]}
+            if row["status"] == "done" and row["entry_id"]:
+                cur.execute("SELECT * FROM entries WHERE id=%s", (row["entry_id"],))
+                e = cur.fetchone()
+                if e:
+                    cur.execute("SELECT * FROM events WHERE source_entry=%s"
+                                " ORDER BY importance DESC", (row["entry_id"],))
+                    out["entry"] = db.entry_to_dict(e)
+                    out["entry"]["events"] = [db.event_to_dict(r) for r in cur.fetchall()]
+            return out
+
+
+def _run_process(jid, body):
+    try:
+        entry = _process(jid, body)
+        _job_update(jid, status="done", entry_id=entry["id"])
+    except llm.LLMError as e:
+        _job_update(jid, status="failed", error=str(e))
+    except Exception as e:  # 兜底:任务异常不能丢
+        _job_update(jid, status="failed", error="%s: %s" % (type(e).__name__, e))
+
+
+def _process(jid, body):
     date = body.date or datetime.now().strftime("%Y-%m-%d")
 
-    # ① Context Builder:档案 + 活跃目标 + 最近 3 条 + 语义相关 5 条
+    # ① embedding + Context Builder:档案 + 活跃目标 + 最近 3 条 + 语义相关 5 条
+    _job_update(jid, status="running", stage="embedding")
     query_vec = None
     with db.db() as conn:
         sections = db.archive_sections(conn)["sections"]
@@ -100,13 +153,12 @@ def process_log(body: ProcessBody):
     prompt = llm.build_user_prompt(sections, goals, recent, related,
                                    body.raw.strip(), date, body.mode)
     deep = body.mode in llm.DEEP_MODES
-    try:
-        reply = llm.call_glm(prompt, deep=deep)
-    except llm.LLMError as e:
-        return JSONResponse(status_code=502, content={"error": str(e)})
-    parsed = parser.parse_result(reply, body.raw, date, body.mode)
+    _job_update(jid, stage="generating")
+    reply = llm.call_glm(prompt, deep=deep)  # LLMError 由 _run_process 记入 jobs
+    _job_update(jid, stage="saving")
+    parsed = parser.parse_json_result(reply, body.raw, date, body.mode)
 
-    # ② 入库:entry + 待审核记忆 + 事件 + 向量
+    # ② 入库:entry + 待审核记忆 + 事件,同一事务;向量入库在事务提交后单独尝试
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(
@@ -114,24 +166,23 @@ def process_log(body: ProcessBody):
                 " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
                 (parsed["date"], parsed["mode"], parsed["raw"], parsed["polished"],
                  parsed["summary"], json.dumps(parsed["advice"], ensure_ascii=False),
-                 json.dumps(parsed["memPack"], ensure_ascii=False),
+                 json.dumps([m["text"] for m in parsed["memories"]], ensure_ascii=False),
                  parsed["profileDelta"], parsed["evi"], reply))
             row = cur.fetchone()
             entry_id = row["id"]
-            for line in parsed["memPack"]:
-                cat, txt = parser.split_mem_line(line)
-                if cat is None:
-                    cat = parser.guess_cat(txt)
+            for m in parsed["memories"]:
                 cur.execute(
-                    "INSERT INTO pending_memories(text,cat,src_entry,evi) VALUES(%s,%s,%s,%s)",
-                    (txt, cat, entry_id, parsed["evi"]))
+                    "INSERT INTO pending_memories(text,cat,src_entry,evi,confidence,note)"
+                    " VALUES(%s,%s,%s,%s,%s,%s)",
+                    (m["text"], m["cat"], entry_id, parsed["evi"],
+                     m.get("confidence"), m.get("note", "")))
             for ev in parsed["events"]:
                 cur.execute(
                     "INSERT INTO events(title,description,event_type,date,importance,source_entry)"
                     " VALUES(%s,%s,%s,%s,%s,%s)",
                     (ev["title"], ev["description"], ev["type"],
                      parsed["date"], ev["importance"], entry_id))
-        # 向量:有正文才存;查询向量失败时补一次
+        conn.commit()  # 核心数据先落库;下面的向量写入失败不回滚它们
         content = parsed["polished"] or parsed["raw"]
         if content and db.vector_ok():
             vec = query_vec
@@ -142,8 +193,9 @@ def process_log(body: ProcessBody):
                     vec = None
             try:
                 store_embedding(conn, "entry", entry_id, content[:2000], vec)
+                conn.commit()
             except Exception:
-                conn.rollback()
+                conn.rollback()  # 只回滚向量部分
         out = db.entry_to_dict(row)
         out["events"] = parsed["events"]
         return out
@@ -221,8 +273,12 @@ def confirm_pending(pid: int, body: ConfirmBody):
             cur.execute("SELECT 1 FROM archive WHERE section=%s AND text=%s",
                         (body.cat, row["text"]))
             if not cur.fetchone():
-                cur.execute("INSERT INTO archive(section,text) VALUES(%s,%s) RETURNING id",
-                            (body.cat, row["text"]))
+                src = [row["src_entry"]] if row["src_entry"] else []
+                cur.execute(
+                    "INSERT INTO archive(section,text,source_entries,confidence,last_verified)"
+                    " VALUES(%s,%s,%s,%s,%s) RETURNING id",
+                    (body.cat, row["text"], src, row["confidence"],
+                     datetime.now().strftime("%Y-%m-%d")))
                 aid = cur.fetchone()["id"]
                 # 记忆也进向量库,供语义检索
                 if db.vector_ok():

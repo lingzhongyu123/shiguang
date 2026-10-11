@@ -1,4 +1,5 @@
-"""解析 GLM 五段式输出 —— 从 daily-log-agent.html 原型移植,逻辑保持一致。"""
+"""解析 GLM 输出 —— 优先 JSON 结构化(v1.2),回退六段式(v1.1 及更早)。"""
+import json
 import re
 
 SECTIONS = ["长期背景", "当前目标", "长期偏好", "进行中的项目", "经多次观察得到的模式", "近期变化"]
@@ -33,6 +34,135 @@ def guess_cat(line):
         if re.search(pat, line):
             return cat
     return "长期背景"
+
+
+def _extract_json(text):
+    """从模型输出中抠出第一个平衡的 JSON 对象;失败返回 None。"""
+    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text[start:], start):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except ValueError:
+                    return None
+    return None
+
+
+VALID_CATS = set(SECTIONS)
+
+
+def parse_json_result(text, raw, date, mode):
+    """优先解析 JSON 结构化输出;失败回退到旧的六段式解析。"""
+    d = _extract_json(text)
+    if not isinstance(d, dict):
+        # 回退旧六段式,并归一成 memories 结构
+        legacy = parse_result(text, raw, date, mode)
+        memories = []
+        for line in legacy["memPack"]:
+            cat, txt = split_mem_line(line)
+            memories.append({"text": txt, "cat": cat or guess_cat(txt),
+                             "confidence": None, "note": ""})
+        legacy["memories"] = memories
+        legacy["skipNote"] = ""
+        legacy["format"] = "legacy"
+        return legacy
+
+    polished = str(d.get("polished") or "").strip()
+    summ = d.get("summary") or {}
+    if isinstance(summ, str):
+        summary = summ.strip()
+    else:
+        parts = []
+        if summ.get("theme"):
+            parts.append("主题:" + str(summ["theme"]))
+        for p in (summ.get("points") or []):
+            parts.append("- " + str(p))
+        summary = "\n".join(parts)
+
+    advice = []
+    for a in (d.get("advice") or []):
+        if isinstance(a, str):
+            if a.strip():
+                advice.append(a.strip())
+            continue
+        line = ""
+        if a.get("observation"):
+            line += "观察:" + str(a["observation"]).strip()
+        if a.get("suggestion"):
+            line += (";" if line else "") + "建议:" + str(a["suggestion"]).strip()
+        if a.get("question"):
+            line += (";" if line else "") + "思考:" + str(a["question"]).strip()
+        if line:
+            advice.append(line)
+
+    mem = []
+    for m in (d.get("memories") or []):
+        if isinstance(m, str):
+            m = {"text": m}
+        txt = str(m.get("text") or "").strip()
+        if not txt:
+            continue
+        cat = m.get("category") or m.get("cat") or ""
+        if cat not in VALID_CATS:
+            cat = guess_cat(txt)
+        conf = m.get("confidence")
+        try:
+            conf = round(float(conf), 2)
+        except (TypeError, ValueError):
+            conf = None
+        mem.append({"text": txt, "cat": cat, "confidence": conf,
+                    "note": str(m.get("note") or "").strip()})
+
+    evi = str(d.get("evidence") or "").strip()
+    if evi not in ("高", "中", "低"):
+        evi = "低" if not d.get("profile_delta") else "中"
+
+    events = []
+    for ev in (d.get("events") or []):
+        if isinstance(ev, str):
+            ev = {"title": ev}
+        title = str(ev.get("title") or "").strip()
+        if not title:
+            continue
+        etype = str(ev.get("type") or "life").lower()
+        if etype not in EVENT_TYPES:
+            etype = "life"
+        try:
+            imp = max(1, min(5, int(ev.get("importance") or 1)))
+        except (TypeError, ValueError):
+            imp = 1
+        events.append({"title": title, "type": etype, "importance": imp,
+                       "description": str(ev.get("description") or "").strip()})
+
+    if not polished and not advice and not mem and not d.get("profile_delta"):
+        polished = text.strip()
+
+    return {"date": date, "mode": mode or "", "raw": raw,
+            "polished": polished, "summary": summary, "advice": advice,
+            "memories": mem, "profileDelta": str(d.get("profile_delta") or "").strip(),
+            "evi": evi, "events": events,
+            "skipNote": str(d.get("skip_note") or "").strip(),
+            "format": "json"}
 
 
 def parse_result(text, raw, date, mode):

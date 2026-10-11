@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS pending_memories (
   cat TEXT NOT NULL,
   src_entry INTEGER REFERENCES entries(id) ON DELETE SET NULL,
   evi TEXT DEFAULT '',
+  confidence REAL,
+  note TEXT DEFAULT '',
   status TEXT DEFAULT 'pending',
   created_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'))
 );
@@ -35,7 +37,19 @@ CREATE TABLE IF NOT EXISTS archive (
   id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   section TEXT NOT NULL,
   text TEXT NOT NULL,
-  updated TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'))
+  updated TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')),
+  source_entries INTEGER[] DEFAULT '{}',
+  confidence REAL,
+  last_verified TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'queued',
+  stage TEXT DEFAULT '',
+  error TEXT DEFAULT '',
+  entry_id INTEGER,
+  created_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')),
+  updated_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'))
 );
 CREATE TABLE IF NOT EXISTS todos (
   id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -79,6 +93,16 @@ CREATE INDEX IF NOT EXISTS embeddings_idx ON embeddings USING hnsw (embedding ve
 """
 
 
+# 已有库的结构迁移(幂等)
+MIGRATIONS = [
+    "ALTER TABLE archive ADD COLUMN IF NOT EXISTS source_entries INTEGER[] DEFAULT '{}'",
+    "ALTER TABLE archive ADD COLUMN IF NOT EXISTS confidence REAL",
+    "ALTER TABLE archive ADD COLUMN IF NOT EXISTS last_verified TEXT DEFAULT ''",
+    "ALTER TABLE pending_memories ADD COLUMN IF NOT EXISTS confidence REAL",
+    "ALTER TABLE pending_memories ADD COLUMN IF NOT EXISTS note TEXT DEFAULT ''",
+]
+
+
 def connect():
     if not config.DATABASE_URL:
         raise RuntimeError("未配置 DATABASE_URL(Supabase PostgreSQL 连接串)")
@@ -99,6 +123,8 @@ def db():
     try:
         with conn.cursor() as cur:
             cur.execute(SCHEMA)
+            for stmt in MIGRATIONS:
+                cur.execute(stmt)
         conn.commit()  # 基础表先落库,避免 pgvector 探测失败被连带回滚
         global VECTOR_OK
         if VECTOR_OK is None:
@@ -142,7 +168,8 @@ def pending_to_dict(row):
     if isinstance(row, psycopg2.extras.DictRow):
         row = dict(row)
     return {"id": row["id"], "text": row["text"], "cat": row["cat"],
-            "src": row["src_entry"], "evi": row["evi"]}
+            "src": row["src_entry"], "evi": row["evi"],
+            "confidence": row.get("confidence"), "note": row.get("note", "")}
 
 
 def todo_to_dict(row):
@@ -170,12 +197,18 @@ def goal_to_dict(row):
 
 def archive_sections(conn):
     sections = {s: [] for s in config.SECTIONS}
+    items = []
     updated = ""
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-        cur.execute("SELECT section, text, updated FROM archive ORDER BY id")
+        cur.execute("SELECT id, section, text, updated, source_entries, confidence,"
+                    " last_verified FROM archive ORDER BY id")
         for row in cur.fetchall():
             if row["section"] in sections:
                 sections[row["section"]].append(row["text"])
+            items.append({"id": row["id"], "section": row["section"], "text": row["text"],
+                          "sources": list(row["source_entries"] or []),
+                          "confidence": row["confidence"],
+                          "lastVerified": row["last_verified"] or ""})
             if row["updated"] and row["updated"] > updated:
                 updated = row["updated"]
-    return {"sections": sections, "updated": updated}
+    return {"sections": sections, "items": items, "updated": updated}

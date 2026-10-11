@@ -106,18 +106,41 @@ $("btnProcess").onclick = function () {
   var btn = $("btnProcess");
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span>正在整理…';
-  $("procHint").textContent = "GLM 正在整理、提炼并生成记忆更新,请稍候(约 10–30 秒)。";
-  api("POST", "/api/process", { raw: raw, mode: mode }).then(function () {
+  $("procHint").textContent = "GLM 正在后台整理,可以去别的页看,好了会提示(约 10–60 秒)。";
+  api("POST", "/api/process", { raw: raw, mode: mode }).then(function (r) {
     $("inRaw").value = "";
-    refreshAll();
-    switchPane("log");
-    toast("已归档");
+    var jid = r.jobId;
+    var poll = setInterval(function () {
+      api("GET", "/api/jobs/" + jid).then(function (job) {
+        if (job.status === "running") {
+          var stages = { embedding: "正在检索相关记忆…", generating: "GLM 正在整理与提炼…", saving: "正在归档…" };
+          $("procHint").textContent = stages[job.stage] || "处理中…";
+          return;
+        }
+        clearInterval(poll);
+        btn.disabled = false;
+        btn.textContent = "提交并处理";
+        $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
+        if (job.status === "done") {
+          refreshAll();
+          switchPane("log");
+          toast("已归档");
+        } else {
+          toast(job.error || "处理失败");
+        }
+      }).catch(function (e) {
+        clearInterval(poll);
+        btn.disabled = false;
+        btn.textContent = "提交并处理";
+        $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
+        toast(e.message);
+      });
+    }, 3000);
   }).catch(function (e) {
-    toast(e.message);
-  }).finally(function () {
     btn.disabled = false;
     btn.textContent = "提交并处理";
     $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
+    toast(e.message);
   });
 };
 
@@ -225,6 +248,8 @@ function renderPending() {
   box.innerHTML = state.pending.map(function (p) {
     var h = '<div class="card pend" style="margin-bottom:10px;padding:12px 14px"><div>' + esc(p.text) + "</div>";
     if (p.evi) h += '<span class="chip">来源证据:' + esc(p.evi) + "</span>";
+    if (p.confidence !== null && p.confidence !== undefined) h += '<span class="chip">AI 置信度 ' + Math.round(p.confidence * 100) + "%</span>";
+    if (p.note) h += '<span class="chip">' + esc(p.note) + "</span>";
     h += '<div class="row" style="margin-top:8px"><label class="hint" style="margin:0">归入</label><select data-pid="' + p.id + '">';
     SECTIONS.forEach(function (s) {
       h += '<option value="' + s + '"' + (s === p.cat ? " selected" : "") + ">" + s + "</option>";

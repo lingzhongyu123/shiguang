@@ -5,3 +5,4 @@ server.log
 shiguang.env
 .git/
 test_v11.py
+test_v12.py
