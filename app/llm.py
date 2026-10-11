@@ -169,6 +169,7 @@ def call_glm(user_prompt, deep=False):
     }
     if "glm-5" in model and not deep:
         body["thinking"] = {"level": "low"}  # 日常模式压推理开销,避免正文被截空
+    body["response_format"] = {"type": "json_object"}  # 强制合法 JSON,防止 flash 吐坏格式
     headers = {"Authorization": "Bearer " + config.ZHIPU_API_KEY}
     last_err = None
     for _ in range(2):  # 一次重试
@@ -182,6 +183,9 @@ def call_glm(user_prompt, deep=False):
                 last_err = LLMError("GLM 服务错误 %d %s" % (r.status_code, detail))
                 if "thinking" in detail and "thinking" in body:
                     body.pop("thinking")  # 该模型不支持思考等级,去掉后重试
+                    continue
+                if "response_format" in detail and "response_format" in body:
+                    body.pop("response_format")  # 该模型不支持 JSON 模式,去掉后重试
                     continue
                 raise last_err
             data = r.json()

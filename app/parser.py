@@ -36,44 +36,120 @@ def guess_cat(line):
     return "长期背景"
 
 
-def _extract_json(text):
-    """从模型输出中抠出第一个平衡的 JSON 对象;失败返回 None。"""
-    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-    start = text.find("{")
-    if start < 0:
+def _loads_repair(s):
+    """json.loads + 常见修复(尾逗号);仍失败返回 None。"""
+    try:
+        return json.loads(s)
+    except ValueError:
+        pass
+    try:
+        return json.loads(re.sub(r",\s*([}\]])", r"\1", s))
+    except ValueError:
         return None
-    depth = 0
-    in_str = False
-    esc = False
-    for i, ch in enumerate(text[start:], start):
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
+
+
+def _extract_json(text):
+    """从模型输出中抠出第一个可解析的平衡 JSON 对象;失败返回 None。"""
+    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+    pos = 0
+    while True:
+        start = text.find("{", pos)
+        if start < 0:
+            return None
+        depth = 0
+        in_str = False
+        esc = False
+        end = None
+        for i, ch in enumerate(text[start:], start):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end is None:
+            return None
+        d = _loads_repair(text[start:end])
+        if isinstance(d, dict):
+            return d
+        pos = start + 1  # 这个 { 不是合法对象,从下一个继续找
+
+
+def _unesc(s):
+    try:
+        return json.loads('"' + s + '"')
+    except ValueError:
+        return s.replace("\\n", "\n").replace('\\"', '"')
+
+
+def _salvage_fields(text):
+    """JSON 整体解析失败时逐字段打捞,避免把整坨原始 JSON 当正文存档。"""
+    out = {}
+    m = re.search(r'"polished"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if m:
+        out["polished"] = _unesc(m.group(1))
+    m = re.search(r'"theme"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if m:
+        out["theme"] = _unesc(m.group(1))
+    for key in ("advice", "memories", "events"):
+        m = re.search(r'"%s"\s*:\s*\[' % key, text)
+        if not m:
             continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start:i + 1])
-                except ValueError:
-                    return None
-    return None
+        i = m.end() - 1
+        depth = 0
+        in_str = False
+        esc = False
+        end = None
+        for j, ch in enumerate(text[i:], i):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+        if end:
+            v = _loads_repair(text[i:end])
+            if isinstance(v, list):
+                out[key] = v
+    return out
 
 
 VALID_CATS = set(SECTIONS)
 
 
 def parse_json_result(text, raw, date, mode):
-    """优先解析 JSON 结构化输出;失败回退到旧的六段式解析。"""
+    """优先解析 JSON 结构化输出;整体失败先打捞字段,再回退旧的六段式解析。"""
     d = _extract_json(text)
+    if not isinstance(d, dict) and ('"polished"' in text or text.lstrip().startswith("{")):
+        salv = _salvage_fields(text)
+        if salv.get("polished"):
+            d = {"polished": salv["polished"],
+                 "summary": {"theme": salv.get("theme", ""), "points": []},
+                 "advice": salv.get("advice", []),
+                 "memories": salv.get("memories", []),
+                 "events": salv.get("events", [])}
     if not isinstance(d, dict):
         # 回退旧六段式,并归一成 memories 结构
         legacy = parse_result(text, raw, date, mode)
