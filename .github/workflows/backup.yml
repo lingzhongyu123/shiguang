@@ -16,13 +16,21 @@ jobs:
           KEY: ${{ secrets.BACKUP_KEY }}
         run: |
           set -e
-          code=$(curl -s -c /tmp/c.txt -o /tmp/login.json -w "%{http_code}" -X POST \
-            -H "Content-Type: application/json" \
-            -d "{\"password\":\"$PASSWORD\"}" https://shiguang-ryos.onrender.com/api/login)
-          if [ "$code" != "200" ]; then echo "login failed: $code $(cat /tmp/login.json)"; exit 1; fi
-          code=$(curl -s -b /tmp/c.txt -o /tmp/backup.json -w "%{http_code}" \
-            https://shiguang-ryos.onrender.com/api/export/json)
-          if [ "$code" != "200" ]; then echo "export failed: $code"; exit 1; fi
+          # Render 免费实例冷启动需要时间:对 502/503/超时反复重试,总容忍约 4 分钟
+          login_code=""
+          for i in $(seq 1 8); do
+            login_code=$(curl -s -m 60 -c /tmp/c.txt -o /tmp/login.json -w "%{http_code}" -X POST \
+              -H "Content-Type: application/json" \
+              --data-binary @<(jq -n --arg p "$PASSWORD" '{password:$p}') \
+              https://shiguang-ryos.onrender.com/api/login || echo 000)
+            [ "$login_code" = "200" ] && break
+            echo "login attempt $i -> $login_code: $(head -c 200 /tmp/login.json)"
+            sleep 30
+          done
+          if [ "$login_code" != "200" ]; then echo "LOGIN FAILED, last code: $login_code"; exit 1; fi
+          exp_code=$(curl -s -m 300 -b /tmp/c.txt -o /tmp/backup.json -w "%{http_code}" \
+            https://shiguang-ryos.onrender.com/api/export/json || echo 000)
+          if [ "$exp_code" != "200" ]; then echo "EXPORT FAILED: $exp_code $(head -c 200 /tmp/backup.json)"; exit 1; fi
           echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/backup.json \
             -out backup.enc -pass stdin
           rm /tmp/backup.json /tmp/c.txt /tmp/login.json
