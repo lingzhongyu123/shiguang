@@ -1,7 +1,5 @@
 import hashlib
 import hmac
-import os
-import secrets
 import time
 
 from fastapi import HTTPException, Request
@@ -9,18 +7,13 @@ from fastapi import HTTPException, Request
 from . import config
 
 COOKIE = "sg_session"
-TTL = 30 * 24 * 3600
+TTL = 365 * 24 * 3600  # 登录一次记住一年
 
 
 def _secret():
-    os.makedirs(os.path.dirname(config.SECRET_PATH), exist_ok=True)
-    if os.path.exists(config.SECRET_PATH):
-        with open(config.SECRET_PATH, "rb") as f:
-            return f.read()
-    s = secrets.token_bytes(32)
-    with open(config.SECRET_PATH, "wb") as f:
-        f.write(s)
-    return s
+    """从环境变量派生(而非本地文件):Render 无持久盘,随机文件会导致每次重启登录失效。"""
+    seed = config.PASSWORD + "|" + config.DATABASE_URL
+    return hashlib.sha256(("sg-secret:" + seed).encode()).digest()
 
 
 def make_token():
