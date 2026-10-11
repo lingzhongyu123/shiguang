@@ -110,6 +110,15 @@ function greet() {
    前端兜底防止极端情况下无限轮询)。 */
 var _poller = null;
 
+/* 失败原文暂存(多任务叠加时拼接,不互相覆盖) */
+function stashFailedRaw(raw) {
+  try {
+    var old = localStorage.getItem("sg_failed_raw");
+    if (old && old !== raw) raw = old + "\n\n————\n\n" + raw;
+    localStorage.setItem("sg_failed_raw", raw);
+  } catch (e) {}
+}
+
 function pollJob(jid, btn) {
   if (_poller) {
     // 覆盖旧轮询器前,先把旧任务的终态查一次:失败的原文暂存、完成的提示归档,
@@ -120,7 +129,7 @@ function pollJob(jid, btn) {
     api("GET", "/api/jobs/" + oldJid).then(function (j) {
       if (j.status === "done") { refreshAll(); toast("上一个任务已归档"); }
       else if (j.status === "failed" && j.raw) {
-        try { localStorage.setItem("sg_failed_raw", j.raw); } catch (e) {}
+        stashFailedRaw(j.raw);
         toast("上一个任务处理失败,原文已暂存(清空输入框后刷新可找回)");
       }
     }).catch(function () {});
@@ -146,7 +155,9 @@ function pollJob(jid, btn) {
       btn.textContent = "提交并处理";
     }
     $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
-    if (job && job.status === "done") {
+    if (job && job.status === "missing") {
+      toast("任务记录已不存在(可能恢复过备份),无法续接");
+    } else if (job && job.status === "done") {
       refreshAll();
       if (btn) switchPane("log");
       toast("已归档");
@@ -160,7 +171,7 @@ function pollJob(jid, btn) {
           toast("处理失败,原文已恢复到输入框:" + (errMsg || "未知错误"));
         } else {
           // 输入框已有新内容,原文暂存,下次清空输入框打开页面时找回
-          try { localStorage.setItem("sg_failed_raw", raw); } catch (e) {}
+          stashFailedRaw(raw);
           toast("处理失败,原文已暂存(清空输入框后刷新可找回):" + (errMsg || "未知错误"));
         }
       } else {
@@ -182,8 +193,9 @@ function pollJob(jid, btn) {
       }
       finish(job, job.error);
     }).catch(function (e) {
-      if (++errs < 3 && e.message !== "未登录") return;
-      finish(null, e.message);
+      if (++errs < 3 && e.message !== "未登录" && e.message.indexOf("不存在") < 0) return;
+      // 404(任务不存在,如数据库重置后恢复备份)是确定终态,不能当"未知状态"保留续接
+      finish(e.message.indexOf("不存在") >= 0 ? { status: "missing" } : null, e.message);
     });
   }, 3000);
   _poller = p;

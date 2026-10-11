@@ -689,6 +689,8 @@ async def import_backup(request: Request):
     if not isinstance(d, dict) or "entries" not in d or "profile" not in d:
         raise HTTPException(status_code=400, detail="不是有效的拾光备份格式")
     n_entries = n_pending = n_todos = 0
+    imported_events = set()  # 本次已导入事件 (title,description):顶层 events 是全量
+    # (含各日志内嵌的),同一次导入不能插两遍
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             for e in d.get("entries", []):
@@ -730,10 +732,13 @@ async def import_backup(request: Request):
                             (line, cat, entry_id))
                         n_pending += 1
                 for ev in e.get("events", []):
-                    _import_event(cur, ev, e.get("date", ""), entry_id)
+                    if _import_event(cur, ev, e.get("date", ""), entry_id):
+                        imported_events.add((ev.get("title", ""), ev.get("description", "")))
             # 顶层 events:导入未被任何日志吸收的孤儿事件(删除过日志的遗留,
             # _entries_with_events 只把挂在现存日志上的事件放进 entries[].events)
             for ev in d.get("events", []):
+                if (ev.get("title", ""), ev.get("description", "")) in imported_events:
+                    continue
                 _import_event(cur, ev, "", None)
             prof = d.get("profile", {})
             # 优先用带证据链的 items(v1.2 备份),保真 source/confidence/lastVerified/status
