@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from contextlib import contextmanager
 
 import psycopg2
@@ -131,24 +132,35 @@ def connect():
 def db():
     conn = connect()
     try:
-        with conn.cursor() as cur:
-            cur.execute(SCHEMA)
-            for stmt in MIGRATIONS:
-                cur.execute(stmt)
-        conn.commit()  # 基础表先落库,避免 pgvector 探测失败被连带回滚
-        global VECTOR_OK
-        if VECTOR_OK is None:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(VECTOR_SCHEMA, {"dim": config.EMBED_DIM})
-                VECTOR_OK = True
-            except Exception:
-                conn.rollback()
-                VECTOR_OK = False
+        global _INIT_DONE
+        if not _INIT_DONE:
+            # 建表/迁移每进程只跑一次:DDL 拿排他锁,高频重跑会与写入事务死锁
+            # (keepalive 每 10 分钟 ping /api/health 后,每连接 DDL 已实际触发过死锁)
+            with _INIT_LOCK:
+                if not _INIT_DONE:
+                    with conn.cursor() as cur:
+                        cur.execute(SCHEMA)
+                        for stmt in MIGRATIONS:
+                            cur.execute(stmt)
+                    conn.commit()
+                    global VECTOR_OK
+                    if VECTOR_OK is None:
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute(VECTOR_SCHEMA, {"dim": config.EMBED_DIM})
+                            VECTOR_OK = True
+                        except Exception:
+                            conn.rollback()
+                            VECTOR_OK = False
+                    _INIT_DONE = True
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+_INIT_LOCK = threading.Lock()
+_INIT_DONE = False
 
 
 VECTOR_OK = None  # None=未探测 True/False=pgvector 可用性
