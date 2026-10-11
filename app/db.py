@@ -51,7 +51,15 @@ CREATE TABLE IF NOT EXISTS todos (
 def connect():
     if not config.DATABASE_URL:
         raise RuntimeError("未配置 DATABASE_URL(Supabase PostgreSQL 连接串)")
-    return psycopg2.connect(config.DATABASE_URL, connect_timeout=15)
+    import time
+    last = None
+    for i in range(3):  # 网络抖动重试
+        try:
+            return psycopg2.connect(config.DATABASE_URL, connect_timeout=15)
+        except psycopg2.OperationalError as e:
+            last = e
+            time.sleep(1 + i)
+    raise last
 
 
 @contextmanager
