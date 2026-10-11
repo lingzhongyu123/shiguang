@@ -290,15 +290,44 @@ def confirm_pending(pid: int, body: ConfirmBody):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="待审核记忆不存在")
-            cur.execute("SELECT 1 FROM archive WHERE section=%s AND text=%s",
+            cur.execute("SELECT id, source_entries FROM archive WHERE section=%s AND text=%s",
                         (body.cat, row["text"]))
-            if not cur.fetchone():
+            existing = cur.fetchone()
+            today = datetime.now().strftime("%Y-%m-%d")
+            if not existing and db.vector_ok():
+                # 语义去重:与既有记忆高度相似 → 并入那条而不是新建
+                try:
+                    vec = llm.embed_texts([row["text"][:1000]])[0]
+                    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur2:
+                        cur2.execute(
+                            "SELECT source_id, 1-(embedding <=> %s::vector) AS sim"
+                            " FROM embeddings WHERE source_type='memory'"
+                            " ORDER BY embedding <=> %s::vector LIMIT 1",
+                            (_vec_literal(vec), _vec_literal(vec)))
+                        hit = cur2.fetchone()
+                    if hit and float(hit["sim"]) > 0.90:
+                        cur.execute("SELECT id, source_entries, section FROM archive WHERE id=%s",
+                                    (hit["source_id"],))
+                        existing = cur.fetchone()
+                except Exception:
+                    conn.rollback()
+                    cur.execute("SELECT id, source_entries FROM archive WHERE section=%s AND text=%s",
+                                (body.cat, row["text"]))
+                    existing = cur.fetchone()
+            if existing:
+                # 同一记忆再次被确认:累积证据链而不是跳过
+                srcs = list(existing["source_entries"] or [])
+                if row["src_entry"] and row["src_entry"] not in srcs:
+                    srcs.append(row["src_entry"])
+                cur.execute("UPDATE archive SET source_entries=%s, last_verified=%s WHERE id=%s",
+                            (srcs, today, existing["id"]))
+                aid = existing["id"]
+            else:
                 src = [row["src_entry"]] if row["src_entry"] else []
                 cur.execute(
                     "INSERT INTO archive(section,text,source_entries,confidence,last_verified)"
                     " VALUES(%s,%s,%s,%s,%s) RETURNING id",
-                    (body.cat, row["text"], src, row["confidence"],
-                     datetime.now().strftime("%Y-%m-%d")))
+                    (body.cat, row["text"], src, row["confidence"], today))
                 aid = cur.fetchone()["id"]
                 # 记忆也进向量库,供语义检索
                 if db.vector_ok():
@@ -506,7 +535,23 @@ def delete_todo(tid: int):
 @app.get("/api/profile", dependencies=[Depends(auth.require_login)])
 def get_profile():
     with db.db() as conn:
-        return db.archive_sections(conn)
+        prof = db.archive_sections(conn)
+        # 证据链:每条记忆的来源日志(日期 + 标题摘要)
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            for item in prof["items"]:
+                srcs = item.get("sources") or []
+                if not srcs:
+                    item["evidence"] = []
+                    continue
+                cur.execute("SELECT id, date, polished, summary FROM entries WHERE id = ANY(%s)",
+                            (srcs,))
+                by_id = {r["id"]: r for r in cur.fetchall()}
+                item["evidence"] = [
+                    {"id": sid, "date": by_id[sid]["date"] if sid in by_id else "",
+                     "title": ((by_id[sid]["polished"] or by_id[sid]["summary"] or "")
+                               .strip().split("\n")[0][:50]) if sid in by_id else "(已删除)"}
+                    for sid in srcs if sid in by_id]
+        return prof
 
 
 class ProfileBody(BaseModel):

@@ -415,6 +415,14 @@ function renderProfile() {
           h += "<p>" + esc(i.text) +
                (i.lastVerified ? ' <span class="hint">核证 ' + esc(i.lastVerified) + "</span>" : "") +
                ' <button class="btn small ghost" data-adep="' + i.id + '">停用</button></p>';
+          var ev = i.evidence || [];
+          if (ev.length) {
+            h += '<details style="margin:-4px 0 6px"><summary class="hint">来源 ' + ev.length + " 篇日志</summary><ul class=\"plain\">";
+            ev.forEach(function (e2) {
+              h += '<li><span class="hint">' + esc(e2.date || "") + "</span> " + esc(e2.title) + "</li>";
+            });
+            h += "</ul></details>";
+          }
         }
       });
     } else h += '<p class="hint">暂无记录</p>';
