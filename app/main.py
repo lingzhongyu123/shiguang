@@ -15,6 +15,37 @@ app = FastAPI(title="拾光")
 STATIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 
 
+# ---------- 检索 ----------
+
+def _vec_literal(vec):
+    return "[" + ",".join("%.6f" % x for x in vec) + "]"
+
+
+def search_related(conn, query_vec, top_k=5, exclude_entry=None):
+    """在 embeddings 表上做语义检索,返回相关历史(entry/memory)。"""
+    if not db.vector_ok() or query_vec is None:
+        return []
+    q = ("SELECT e.source_type, e.source_id, e.content, en.date FROM embeddings e "
+         "LEFT JOIN entries en ON e.source_type='entry' AND en.id=e.source_id "
+         "WHERE (%s IS NULL OR e.source_id != %s OR e.source_type != 'entry') "
+         "ORDER BY e.embedding <=> %s::vector LIMIT %s")
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        cur.execute(q, (exclude_entry, exclude_entry, _vec_literal(query_vec), top_k))
+        return [{"source_type": r["source_type"], "source_id": r["source_id"],
+                 "content": r["content"], "date": r["date"] or ""} for r in cur.fetchall()]
+
+
+def store_embedding(conn, source_type, source_id, content, vec):
+    if not db.vector_ok() or vec is None:
+        return
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM embeddings WHERE source_type=%s AND source_id=%s",
+                    (source_type, source_id))
+        cur.execute("INSERT INTO embeddings(source_type,source_id,content,embedding)"
+                    " VALUES(%s,%s,%s,%s::vector)",
+                    (source_type, source_id, content, _vec_literal(vec)))
+
+
 # ---------- auth ----------
 
 class LoginBody(BaseModel):
@@ -49,17 +80,33 @@ def process_log(body: ProcessBody):
     if not body.raw and not body.mode:
         raise HTTPException(status_code=400, detail="口述内容和模式至少填一个")
     date = body.date or datetime.now().strftime("%Y-%m-%d")
+
+    # ① Context Builder:档案 + 活跃目标 + 最近 3 条 + 语义相关 5 条
+    query_vec = None
     with db.db() as conn:
         sections = db.archive_sections(conn)["sections"]
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("SELECT * FROM entries ORDER BY id")
-            entries = [db.entry_to_dict(r) for r in cur.fetchall()]
-    prompt = llm.build_user_prompt(sections, entries, body.raw.strip(), date, body.mode)
+            cur.execute("SELECT * FROM goals WHERE status='active' ORDER BY id")
+            goals = [db.goal_to_dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM entries ORDER BY id DESC LIMIT 3")
+            recent = [db.entry_to_dict(r) for r in cur.fetchall()][::-1]
+        if body.raw and db.vector_ok():
+            try:
+                query_vec = llm.embed_texts([body.raw[:1500]])[0]
+            except llm.LLMError:
+                query_vec = None
+        related = search_related(conn, query_vec, top_k=5)
+
+    prompt = llm.build_user_prompt(sections, goals, recent, related,
+                                   body.raw.strip(), date, body.mode)
+    deep = body.mode in llm.DEEP_MODES
     try:
-        reply = llm.call_glm(prompt)
+        reply = llm.call_glm(prompt, deep=deep)
     except llm.LLMError as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
     parsed = parser.parse_result(reply, body.raw, date, body.mode)
+
+    # ② 入库:entry + 待审核记忆 + 事件 + 向量
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(
@@ -78,17 +125,50 @@ def process_log(body: ProcessBody):
                 cur.execute(
                     "INSERT INTO pending_memories(text,cat,src_entry,evi) VALUES(%s,%s,%s,%s)",
                     (txt, cat, entry_id, parsed["evi"]))
-        return db.entry_to_dict(row)
+            for ev in parsed["events"]:
+                cur.execute(
+                    "INSERT INTO events(title,description,event_type,date,importance,source_entry)"
+                    " VALUES(%s,%s,%s,%s,%s,%s)",
+                    (ev["title"], ev["description"], ev["type"],
+                     parsed["date"], ev["importance"], entry_id))
+        # 向量:有正文才存;查询向量失败时补一次
+        content = parsed["polished"] or parsed["raw"]
+        if content and db.vector_ok():
+            vec = query_vec
+            if vec is None:
+                try:
+                    vec = llm.embed_texts([content[:1500]])[0]
+                except llm.LLMError:
+                    vec = None
+            try:
+                store_embedding(conn, "entry", entry_id, content[:2000], vec)
+            except Exception:
+                conn.rollback()
+        out = db.entry_to_dict(row)
+        out["events"] = parsed["events"]
+        return out
 
 
 # ---------- entries ----------
 
+def _entries_with_events(conn):
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        cur.execute("SELECT * FROM entries ORDER BY id DESC LIMIT 500")
+        entries = [db.entry_to_dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT * FROM events ORDER BY importance DESC, id")
+        events = [db.event_to_dict(r) for r in cur.fetchall()]
+    by_src = {}
+    for ev in events:
+        by_src.setdefault(ev["src"], []).append(ev)
+    for e in entries:
+        e["events"] = by_src.get(e["id"], [])
+    return entries
+
+
 @app.get("/api/entries", dependencies=[Depends(auth.require_login)])
-def list_entries(limit: int = 500, offset: int = 0):
+def list_entries():
     with db.db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("SELECT * FROM entries ORDER BY id DESC LIMIT %s OFFSET %s", (limit, offset))
-            return [db.entry_to_dict(r) for r in cur.fetchall()]
+        return _entries_with_events(conn)
 
 
 @app.get("/api/entries/{eid}", dependencies=[Depends(auth.require_login)])
@@ -99,7 +179,10 @@ def get_entry(eid: int):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="日志不存在")
-            return db.entry_to_dict(row)
+            e = db.entry_to_dict(row)
+            cur.execute("SELECT * FROM events WHERE source_entry=%s ORDER BY importance DESC", (eid,))
+            e["events"] = [db.event_to_dict(r) for r in cur.fetchall()]
+            return e
 
 
 @app.delete("/api/entries/{eid}", dependencies=[Depends(auth.require_login)])
@@ -107,6 +190,7 @@ def delete_entry(eid: int):
     with db.db() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM entries WHERE id=%s", (eid,))
+            cur.execute("DELETE FROM embeddings WHERE source_type='entry' AND source_id=%s", (eid,))
     return {"ok": True}
 
 
@@ -137,8 +221,16 @@ def confirm_pending(pid: int, body: ConfirmBody):
             cur.execute("SELECT 1 FROM archive WHERE section=%s AND text=%s",
                         (body.cat, row["text"]))
             if not cur.fetchone():
-                cur.execute("INSERT INTO archive(section,text) VALUES(%s,%s)",
+                cur.execute("INSERT INTO archive(section,text) VALUES(%s,%s) RETURNING id",
                             (body.cat, row["text"]))
+                aid = cur.fetchone()["id"]
+                # 记忆也进向量库,供语义检索
+                if db.vector_ok():
+                    try:
+                        vec = llm.embed_texts([row["text"][:1000]])[0]
+                        store_embedding(conn, "memory", aid, row["text"], vec)
+                    except Exception:
+                        conn.rollback()
             cur.execute("UPDATE pending_memories SET status='archived', cat=%s WHERE id=%s",
                         (body.cat, pid))
     return {"ok": True}
@@ -149,6 +241,110 @@ def skip_pending(pid: int):
     with db.db() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE pending_memories SET status='discarded' WHERE id=%s", (pid,))
+    return {"ok": True}
+
+
+# ---------- events ----------
+
+@app.get("/api/events", dependencies=[Depends(auth.require_login)])
+def list_events():
+    with db.db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT * FROM events ORDER BY date DESC, importance DESC LIMIT 500")
+            return [db.event_to_dict(r) for r in cur.fetchall()]
+
+
+@app.delete("/api/events/{eid}", dependencies=[Depends(auth.require_login)])
+def delete_event(eid: int):
+    with db.db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE id=%s", (eid,))
+    return {"ok": True}
+
+
+# ---------- goals ----------
+
+_goal_vec_cache = {}
+
+
+class GoalBody(BaseModel):
+    title: str
+    description: str = ""
+    deadline: str = ""
+
+
+class GoalPatch(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+    progress: int | None = None
+    deadline: str | None = None
+
+
+@app.get("/api/goals", dependencies=[Depends(auth.require_login)])
+def list_goals():
+    with db.db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT * FROM goals ORDER BY status='active' DESC, id DESC")
+            goals = [db.goal_to_dict(r) for r in cur.fetchall()]
+        # 停滞检测:每个活跃目标,检索最相关的 3 条日志,看最近一条距今几天
+        today = datetime.now().date()
+        for g in goals:
+            g["daysIdle"] = None
+            if g["status"] != "active" or not db.vector_ok():
+                continue
+            key = (g["id"], g["title"])
+            if key not in _goal_vec_cache:
+                try:
+                    _goal_vec_cache[key] = llm.embed_texts([g["title"][:500]])[0]
+                except llm.LLMError:
+                    continue
+            hits = search_related(conn, _goal_vec_cache[key], top_k=3)
+            dates = []
+            for h in hits:
+                if h["source_type"] == "entry" and h["date"]:
+                    try:
+                        dates.append(datetime.strptime(h["date"][:10], "%Y-%m-%d").date())
+                    except ValueError:
+                        pass
+            if dates:
+                g["daysIdle"] = (today - max(dates)).days
+    return goals
+
+
+@app.post("/api/goals", dependencies=[Depends(auth.require_login)])
+def add_goal(body: GoalBody):
+    with db.db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("INSERT INTO goals(title,description,deadline) VALUES(%s,%s,%s) RETURNING *",
+                        (body.title.strip(), body.description, body.deadline))
+            return db.goal_to_dict(cur.fetchone())
+
+
+@app.patch("/api/goals/{gid}", dependencies=[Depends(auth.require_login)])
+def patch_goal(gid: int, body: GoalPatch):
+    with db.db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT * FROM goals WHERE id=%s", (gid,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="目标不存在")
+            vals = {k: getattr(body, k) if getattr(body, k) is not None else row[k]
+                    for k in ("title", "description", "status", "progress", "deadline")}
+            if vals["status"] not in ("active", "paused", "done", "abandoned"):
+                raise HTTPException(status_code=400, detail="状态不合法")
+            cur.execute("UPDATE goals SET title=%s,description=%s,status=%s,progress=%s,deadline=%s"
+                        " WHERE id=%s RETURNING *",
+                        (vals["title"], vals["description"], vals["status"],
+                         vals["progress"], vals["deadline"], gid))
+            return db.goal_to_dict(cur.fetchone())
+
+
+@app.delete("/api/goals/{gid}", dependencies=[Depends(auth.require_login)])
+def delete_goal(gid: int):
+    with db.db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM goals WHERE id=%s", (gid,))
     return {"ok": True}
 
 
@@ -224,12 +420,20 @@ def put_profile(body: ProfileBody):
     sections = parser.parse_profile_textarea(body.text)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     with db.db() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("DELETE FROM embeddings WHERE source_type='memory'")
             cur.execute("DELETE FROM archive")
             for sec, items in sections.items():
                 for item in items:
-                    cur.execute("INSERT INTO archive(section,text,updated) VALUES(%s,%s,%s)",
+                    cur.execute("INSERT INTO archive(section,text,updated) VALUES(%s,%s,%s) RETURNING id",
                                 (sec, item, now))
+                    aid = cur.fetchone()["id"]
+                    if db.vector_ok():
+                        try:
+                            vec = llm.embed_texts([item[:1000]])[0]
+                            store_embedding(conn, "memory", aid, item, vec)
+                        except Exception:
+                            conn.rollback()
     return {"ok": True}
 
 
@@ -242,12 +446,16 @@ def _export_data():
             pending = [db.pending_to_dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM todos ORDER BY id")
             todos = [db.todo_to_dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM entries ORDER BY id")
-            rows = [db.entry_to_dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM events ORDER BY id")
+            events = [db.event_to_dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT * FROM goals ORDER BY id")
+            goals = [db.goal_to_dict(r) for r in cur.fetchall()]
+            rows = _entries_with_events(conn)
         return {
             "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "profile": db.archive_sections(conn),
-            "pending": pending, "todos": todos, "rows": rows,
+            "pending": pending, "todos": todos, "events": events, "goals": goals,
+            "rows": rows,
         }
 
 
@@ -299,6 +507,12 @@ async def import_backup(request: Request):
                         "INSERT INTO pending_memories(text,cat,src_entry) VALUES(%s,%s,%s)",
                         (line, cat, entry_id))
                     n_pending += 1
+                for ev in e.get("events", []):
+                    cur.execute(
+                        "INSERT INTO events(title,description,event_type,date,importance,source_entry)"
+                        " VALUES(%s,%s,%s,%s,%s,%s)",
+                        (ev.get("title", ""), ev.get("description", ""), ev.get("type", "life"),
+                         e.get("date", ""), int(ev.get("importance", 1) or 1), entry_id))
             prof = d.get("profile", {})
             old_sections = prof.get("sections") or prof  # 兼容原型格式 {节名: [..]}
             for sec, items in old_sections.items():
@@ -318,6 +532,11 @@ async def import_backup(request: Request):
                 cur.execute("INSERT INTO todos(text,due,done) VALUES(%s,%s,%s)",
                             (t.get("text", ""), t.get("due", ""), 1 if t.get("done") else 0))
                 n_todos += 1
+            for g in d.get("goals", []):
+                cur.execute("INSERT INTO goals(title,description,status,progress,deadline) VALUES(%s,%s,%s,%s,%s)",
+                            (g.get("title", ""), g.get("description", ""),
+                             g.get("status", "active"), int(g.get("progress", 0) or 0),
+                             g.get("deadline", "")))
     return {"entries": n_entries, "pending": n_pending, "todos": n_todos}
 
 

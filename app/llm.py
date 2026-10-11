@@ -85,9 +85,19 @@ SYSTEM_PROMPT = """# 个人成长日志 Agent｜System Prompt
 
 每次日志处理结束后,只简要输出:本次画像新增或变化、证据强度(高/中/低)及依据、暂时不下结论的部分。没有新的有效认识时明确说明画像暂时不变。
 
+### 【6. 事件提取】
+
+从日志中提取值得长期记录的事件(有明确进展、决定、转折或重要经历才提取,琐碎日常不提取;没有则本段写“无”)。每个事件一行,严格用竖线分隔四段:
+
+- 事件标题 | 类型 | 重要度 | 一句话描述
+
+类型取值:research(科研)/ study(学习)/ life(生活)/ decision(决定)/ relation(人际)。重要度为 1-5 整数。示例:
+
+- 确定MLLM研究方向 | decision | 5 | 与张老师交流后明确以多模态扩散模型为主线
+
 ## 四、如何在长期使用中积累记忆
 
-利用我在提示词末尾提供的《个人核心记忆档案》和近期日志摘要,避免每次从零理解我。注意跨时间的信息联系:相同问题是否再次出现、以前的计划是否完成、过去的判断是否被现实验证。档案中没有的信息,不要假装了解。
+利用我在提示词末尾提供的《个人核心记忆档案》、活跃目标、近期日志摘要和语义相关的历史记录,避免每次从零理解我。注意跨时间的信息联系:相同问题是否再次出现、以前的计划是否完成、过去的判断是否被现实验证;如果当前日志与某个活跃目标相关,在建议中明确指出这层关系。档案和相关记录中没有的信息,不要假装了解。
 
 ## 五、移动端使用规范
 
@@ -123,23 +133,33 @@ class LLMError(Exception):
     pass
 
 
-def build_user_prompt(sections, entries, raw, date, mode):
+DEEP_MODES = ("/周总结", "/月总结", "/深度复盘")
+
+
+def build_user_prompt(sections, goals, recent, related, raw, date, mode):
+    """Context Builder:档案 + 活跃目标 + 最近日志 + 语义相关记忆。"""
     lines = []
     for s in SECTIONS:
         items = sections.get(s) or []
         if items:
             lines.append("### " + s + "\n" + "\n".join("- " + x for x in items))
     profile = "\n\n".join(lines) if lines else "(档案为空,这是第一批记录)"
-    digest = "\n".join(
-        "- [%s] %s" % (e["date"], (e["polished"] or e["raw"] or "")[:120])
-        for e in entries[-7:]
-    )
     parts = [
         SYSTEM_PROMPT, "", "---", "",
         "# 我的《个人核心记忆档案》(你据此理解我,并按流程第 4、5 节更新它)", "", profile, "",
     ]
-    if digest:
-        parts += ["# 近期已归档日志摘要(最近 7 条,注意跨时间联系)", digest, ""]
+    if goals:
+        parts += ["# 我的活跃目标(建议尽量与目标关联)", "",
+                  "\n".join("- " + g["title"] + ("(截止 " + g["deadline"] + ")" if g["deadline"] else "")
+                            for g in goals), ""]
+    if recent:
+        parts += ["# 近期已归档日志摘要(最近 3 条)", "",
+                  "\n".join("- [%s] %s" % (e["date"], (e["polished"] or e["raw"] or "")[:120])
+                            for e in recent), ""]
+    if related:
+        parts += ["# 与本次内容语义相关的历史记录(跨时间段检索,注意跨时间联系)", "",
+                  "\n".join("- [%s][%s] %s" % (r["date"], r["source_type"], r["content"][:160])
+                            for r in related), ""]
     parts += ["---", ""]
     if mode:
         parts += ["本次快捷指令:" + mode, ""]
@@ -150,28 +170,60 @@ def build_user_prompt(sections, entries, raw, date, mode):
     return "\n".join(parts)
 
 
-def call_glm(user_prompt):
+def call_glm(user_prompt, deep=False):
     if not config.ZHIPU_API_KEY:
         raise LLMError("未配置 ZHIPU_API_KEY")
+    model = (config.GLM_MODEL_DEEP if deep and config.GLM_MODEL_DEEP else config.GLM_MODEL)
     body = {
-        "model": config.GLM_MODEL,
+        "model": model,
         "messages": [
-            {"role": "system", "content": "你严格按照 System Prompt 的五段结构输出,不要输出多余的开场白。"},
+            {"role": "system", "content": "你严格按照 System Prompt 的分段结构输出,不要输出多余的开场白。"},
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.5,
+        "max_tokens": 16384,
     }
+    if "glm-5" in model and not deep:
+        body["thinking"] = {"level": "low"}  # 日常模式压推理开销,避免正文被截空
     headers = {"Authorization": "Bearer " + config.ZHIPU_API_KEY}
     last_err = None
     for _ in range(2):  # 一次重试
         try:
-            r = httpx.post(API_URL, json=body, headers=headers, timeout=120)
-            if r.status_code >= 500:
-                last_err = LLMError("GLM 服务错误 %d" % r.status_code)
-                continue
-            r.raise_for_status()
+            r = httpx.post(API_URL, json=body, headers=headers, timeout=300)
+            if r.status_code >= 400:
+                try:
+                    detail = r.json().get("error", {}).get("message", "")
+                except Exception:
+                    detail = ""
+                last_err = LLMError("GLM 服务错误 %d %s" % (r.status_code, detail))
+                if "thinking" in detail and "thinking" in body:
+                    body.pop("thinking")  # 该模型不支持思考等级,去掉后重试
+                    continue
+                raise last_err
             data = r.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"].get("content") or ""
+            if content.strip():
+                return content
+            last_err = LLMError("GLM 返回了空正文(推理耗尽输出额度)")
         except (httpx.HTTPError, KeyError, IndexError) as e:
             last_err = LLMError("GLM 调用失败:" + str(e))
     raise last_err or LLMError("GLM 调用失败")
+
+
+EMBED_URL = "https://open.bigmodel.cn/api/paas/v4/embeddings"
+
+
+def embed_texts(texts):
+    """智谱 embedding-3,返回向量列表;失败时抛 LLMError。"""
+    if not config.ZHIPU_API_KEY:
+        raise LLMError("未配置 ZHIPU_API_KEY")
+    headers = {"Authorization": "Bearer " + config.ZHIPU_API_KEY}
+    try:
+        r = httpx.post(EMBED_URL, json={"model": config.EMBED_MODEL, "input": texts,
+                                        "dimensions": config.EMBED_DIM},
+                       headers=headers, timeout=60)
+        r.raise_for_status()
+        data = sorted(r.json()["data"], key=lambda d: d["index"])
+        return [d["embedding"] for d in data]
+    except (httpx.HTTPError, KeyError, IndexError) as e:
+        raise LLMError("embedding 调用失败:" + str(e))

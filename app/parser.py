@@ -13,7 +13,7 @@ def bullet_lines(block):
     out = []
     for line in block.split("\n"):
         line = line.strip()
-        line = re.sub(r"^[-•·]\s*", "", line)
+        line = re.sub(r"^[-•·>\s]+", "", line)
         line = re.sub(r"^\d+[\.、)]\s*", "", line)
         line = line.strip("*").strip()
         if len(line) > 1:
@@ -58,15 +58,45 @@ def parse_result(text, raw, date, mode):
         em = re.search(r"证据强度[:::]\s*(高|中|低)", s5)
         if em:
             seg["evi"] = em.group(1)
+    seg["events"] = parse_events(grab_section(text, 6))
     if not seg["polished"] and not seg["advice"] and not seg["memPack"] and not seg["profileDelta"]:
         seg["polished"] = text.strip()
     return {"date": date, "mode": mode or "", "raw": raw, **seg}
 
 
+EVENT_TYPES = ["research", "study", "life", "decision", "relation"]
+
+
+def parse_events(block):
+    """解析第6段 '- 标题 | 类型 | 重要度 | 描述' 行。"""
+    out = []
+    for line in block.split("\n"):
+        line = re.sub(r"^[-•·]\s*", "", line.strip())
+        if not line or line == "无" or "|" not in line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 2 or not parts[0]:
+            continue
+        etype = parts[1].lower() if len(parts) > 1 else "life"
+        if etype not in EVENT_TYPES:
+            etype = "life"
+        try:
+            imp = max(1, min(5, int(re.sub(r"\D", "", parts[2]) or 1)))
+        except (ValueError, IndexError):
+            imp = 1
+        desc = parts[3] if len(parts) > 3 else ""
+        out.append({"title": parts[0], "type": etype, "importance": imp, "description": desc})
+    return out
+
+
 def split_mem_line(line):
     """行内若标注了归入节,拆出 (cat, text);否则返回 (None, line)。"""
-    m = re.match(r"^\[?(长期背景|当前目标|长期偏好|进行中的项目|经多次观察得到的模式|近期变化)\]?\s*[:::]?\s*(.+)$", line)
-    return (m.group(1), m.group(2)) if m else (None, line)
+    line = re.sub(r"^[-•·>\s]+", "", line)  # 去掉 "- " "> " 等前缀
+    # 兼容 "【长期背景|已确认事实】" / "[进行中的项目 | 待观察]" 这类前置标注
+    m = re.match(r"^[【\[]?(长期背景|当前目标|长期偏好|进行中的项目|经多次观察得到的模式|近期变化)(?:[】\]]|\s*[|｜][^】\]]*[】\]])?\s*[:::]?\s*(.+)$", line)
+    if m:
+        return m.group(1), m.group(2)
+    return (None, line)
 
 
 def parse_profile_textarea(txt):

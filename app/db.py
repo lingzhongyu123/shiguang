@@ -45,6 +45,37 @@ CREATE TABLE IF NOT EXISTS todos (
   src_entry INTEGER,
   created_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'))
 );
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  event_type TEXT DEFAULT 'life',
+  date TEXT,
+  importance INT DEFAULT 1,
+  source_entry INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'))
+);
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  progress INT DEFAULT 0,
+  deadline TEXT DEFAULT '',
+  created_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'))
+);
+"""
+
+VECTOR_SCHEMA = """
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE IF NOT EXISTS embeddings (
+  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_id INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  embedding vector(%(dim)s)
+);
+CREATE INDEX IF NOT EXISTS embeddings_idx ON embeddings USING hnsw (embedding vector_cosine_ops);
 """
 
 
@@ -68,10 +99,27 @@ def db():
     try:
         with conn.cursor() as cur:
             cur.execute(SCHEMA)
+        conn.commit()  # 基础表先落库,避免 pgvector 探测失败被连带回滚
+        global VECTOR_OK
+        if VECTOR_OK is None:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(VECTOR_SCHEMA, {"dim": config.EMBED_DIM})
+                VECTOR_OK = True
+            except Exception:
+                conn.rollback()
+                VECTOR_OK = False
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+VECTOR_OK = None  # None=未探测 True/False=pgvector 可用性
+
+
+def vector_ok():
+    return VECTOR_OK is True
 
 
 def rows_to_dicts(cur):
@@ -102,6 +150,22 @@ def todo_to_dict(row):
         row = dict(row)
     return {"id": row["id"], "text": row["text"], "due": row["due"],
             "done": bool(row["done"]), "src": row["src_entry"]}
+
+
+def event_to_dict(row):
+    if isinstance(row, psycopg2.extras.DictRow):
+        row = dict(row)
+    return {"id": row["id"], "title": row["title"], "description": row["description"],
+            "type": row["event_type"], "date": row["date"],
+            "importance": row["importance"], "src": row["source_entry"]}
+
+
+def goal_to_dict(row):
+    if isinstance(row, psycopg2.extras.DictRow):
+        row = dict(row)
+    return {"id": row["id"], "title": row["title"], "description": row["description"],
+            "status": row["status"], "progress": row["progress"],
+            "deadline": row["deadline"], "createdAt": row["created_at"]}
 
 
 def archive_sections(conn):

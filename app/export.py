@@ -19,6 +19,14 @@ def to_markdown(data):
     L += (["- [%s] %s%s" % ("x" if t["done"] else " ", t["text"],
                             "(截止 " + t["due"] + ")" if t["due"] else "")
            for t in data["todos"]] or ["(无)"])
+    L += ["", "## 目标", ""]
+    L += (["- [%s] %s%s" % (g["status"], g["title"],
+                            "(截止 " + g["deadline"] + ")" if g["deadline"] else "")
+           for g in data.get("goals", [])] or ["(无)"])
+    L += ["", "## 事件时间线", ""]
+    L += (["- [%s][%s|%d] %s%s" % (ev["date"] or "", ev["type"], ev["importance"],
+                                    ev["title"], " — " + ev["description"] if ev["description"] else "")
+           for ev in data.get("events", [])] or ["(无)"])
     L += ["", "## 日志全文", ""]
     for e in rows:
         L.append("### " + e["date"] + (" " + e["mode"] if e["mode"] else ""))
@@ -42,5 +50,7 @@ def to_json(data):
         "profile": data["profile"],
         "pending": data["pending"],
         "todos": data["todos"],
+        "goals": data.get("goals", []),
+        "events": data.get("events", []),
         "entries": data["rows"],
     }, ensure_ascii=False, indent=2)

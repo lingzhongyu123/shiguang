@@ -1,7 +1,7 @@
 "use strict";
 var SECTIONS = ["长期背景", "当前目标", "长期偏好", "进行中的项目", "经多次观察得到的模式", "近期变化"];
 
-var state = { entries: [], pending: [], todos: [], profile: { sections: {}, updated: "" } };
+var state = { entries: [], pending: [], todos: [], goals: [], events: [], profile: { sections: {}, updated: "" } };
 
 /* ---- 基础 ---- */
 function $(id) { return document.getElementById(id); }
@@ -70,6 +70,8 @@ function refreshAll() {
   api("GET", "/api/pending").then(function (ps) { state.pending = ps; renderPending(); }).catch(function () {});
   api("GET", "/api/todos").then(function (ts) { state.todos = ts; renderTodos(); }).catch(function () {});
   api("GET", "/api/profile").then(function (p) { state.profile = p; renderProfile(); }).catch(function () {});
+  api("GET", "/api/goals").then(function (gs) { state.goals = gs; renderGoals(); }).catch(function () {});
+  api("GET", "/api/events").then(function (es) { state.events = es; renderEvents(); }).catch(function () {});
 }
 
 /* ---- 页签 ---- */
@@ -157,6 +159,14 @@ function renderLog() {
     if (e.profileDelta) h += esc(e.profileDelta) + (e.evi ? '<div><span class="chip acc">证据 ' + esc(e.evi) + "</span></div>" : "");
     else h += '<span class="hint">(本次画像不变)</span>';
     h += "</div>";
+    if (e.events && e.events.length) {
+      h += '<div class="hint" style="margin-top:8px">本次事件:</div><ul class="plain">';
+      e.events.forEach(function (ev) {
+        h += '<li><span class="chip">' + esc(ev.type) + '</span> <b>' + esc(ev.title) + "</b>" +
+             (ev.description ? " — " + esc(ev.description) : "") + "</li>";
+      });
+      h += "</ul>";
+    }
     if (e.raw) h += '<details style="margin-top:8px"><summary>原始口述</summary><div class="hint" style="white-space:pre-wrap">' + esc(e.raw) + "</div></details>";
     h += '<div class="row" style="margin-top:8px"><button class="btn danger small" data-del="' + e.id + '">删除</button></div></div>';
     return h;
@@ -283,6 +293,80 @@ $("btnTodoAdd").onclick = function () {
 $("todoNew").addEventListener("keydown", function (e) {
   if (e.key === "Enter") $("btnTodoAdd").click();
 });
+
+/* ---- 目标 ---- */
+var GOAL_STATUS = { active: "进行中", paused: "暂停", done: "已完成", abandoned: "放弃" };
+function renderGoals() {
+  var box = $("goalList");
+  if (!state.goals.length) {
+    box.innerHTML = '<div class="empty" style="padding:14px 6px">还没有目标。添加后,AI 处理日志时会把内容和目标关联。</div>';
+    return;
+  }
+  box.innerHTML = state.goals.map(function (g) {
+    var h = '<div class="todo' + (g.status !== "active" ? " done" : "") + '">';
+    h += '<div class="tx"><b>' + esc(g.title) + "</b>";
+    if (g.deadline) h += ' <span class="due">截止 ' + esc(g.deadline) + "</span>";
+    if (g.status !== "active") h += ' <span class="chip">' + esc(GOAL_STATUS[g.status] || g.status) + "</span>";
+    if (g.status === "active" && g.daysIdle !== null && g.daysIdle >= 7)
+      h += '<div class="hint" style="color:#b4552d">⚠ 最近 ' + g.daysIdle + " 天没有与它相关的日志</div>";
+    h += "</div>";
+    if (g.status === "active")
+      h += '<button class="btn small ghost" data-gdone="' + g.id + '">完成</button>';
+    h += '<button class="btn small ghost" data-gdel="' + g.id + '">✕</button></div>';
+    return h;
+  }).join("");
+  box.querySelectorAll("[data-gdone]").forEach(function (b) {
+    b.onclick = function () {
+      api("PATCH", "/api/goals/" + b.dataset.gdone, { status: "done" }).then(function () { refreshAll(); })
+        .catch(function (err) { toast(err.message); });
+    };
+  });
+  box.querySelectorAll("[data-gdel]").forEach(function (b) {
+    b.onclick = function () {
+      if (!confirm("删除这个目标?")) return;
+      api("DELETE", "/api/goals/" + b.dataset.gdel).then(function () { refreshAll(); })
+        .catch(function (err) { toast(err.message); });
+    };
+  });
+}
+$("btnGoalAdd").onclick = function () {
+  var t = $("goalNew").value.trim();
+  if (!t) { toast("先填写目标内容"); return; }
+  api("POST", "/api/goals", { title: t, deadline: $("goalDue").value }).then(function () {
+    $("goalNew").value = "";
+    refreshAll();
+  }).catch(function (err) { toast(err.message); });
+};
+$("goalNew").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") $("btnGoalAdd").click();
+});
+
+/* ---- 事件时间线 ---- */
+var EV_LABEL = { research: "科研", study: "学习", life: "生活", decision: "决定", relation: "人际" };
+function renderEvents() {
+  var box = $("eventList");
+  if (!state.events.length) {
+    box.innerHTML = '<div class="empty" style="padding:14px 6px">还没有提取到事件。记录几条日志后,重要事件会出现在这里。</div>';
+    return;
+  }
+  box.innerHTML = state.events.map(function (ev) {
+    var stars = "★".repeat(Math.min(5, ev.importance || 1));
+    var h = '<div class="todo"><div class="tx">' +
+      '<span class="hint">' + esc(ev.date || "") + "</span> ";
+    h += '<span class="chip">' + esc(EV_LABEL[ev.type] || ev.type) + "</span> <b>" + esc(ev.title) + "</b>";
+    if (ev.importance >= 4) h += ' <span style="color:#c9962e;font-size:12px">' + stars + "</span>";
+    if (ev.description) h += '<div class="hint" style="white-space:normal">' + esc(ev.description) + "</div>";
+    h += "</div>";
+    h += '<button class="btn small ghost" data-edel="' + ev.id + '">✕</button></div>';
+    return h;
+  }).join("");
+  box.querySelectorAll("[data-edel]").forEach(function (b) {
+    b.onclick = function () {
+      api("DELETE", "/api/events/" + b.dataset.edel).then(function () { refreshAll(); })
+        .catch(function (err) { toast(err.message); });
+    };
+  });
+}
 
 /* ---- 画像 ---- */
 function renderProfile() {
