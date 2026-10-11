@@ -398,17 +398,45 @@ function renderProfile() {
   var view = $("profileView");
   var p = state.profile;
   var secs = p.sections || {};
+  var items = p.items || [];
   var n = p.updated ? ' <span class="hint">更新于 ' + esc(p.updated) + "</span>" : "";
   var h = "<h2>个人核心记忆档案" + n + "</h2>";
   var any = false;
   SECTIONS.forEach(function (s) {
     h += '<div class="profile-block"><h3>' + s + "</h3>";
-    if (secs[s] && secs[s].length) { any = true; h += "<p>" + secs[s].map(esc).join("<br>") + "</p>"; }
-    else h += '<p class="hint">暂无记录</p>';
+    var secItems = items.filter(function (i) { return i.section === s; });
+    if (secItems.length) {
+      any = true;
+      secItems.forEach(function (i) {
+        if (i.status === "deprecated") {
+          h += '<p style="text-decoration:line-through;opacity:.55">' + esc(i.text) +
+               ' <button class="btn small ghost" data-aret="' + i.id + '">恢复</button></p>';
+        } else {
+          h += "<p>" + esc(i.text) +
+               (i.lastVerified ? ' <span class="hint">核证 ' + esc(i.lastVerified) + "</span>" : "") +
+               ' <button class="btn small ghost" data-adep="' + i.id + '">停用</button></p>';
+        }
+      });
+    } else h += '<p class="hint">暂无记录</p>';
     h += "</div>";
   });
   if (!any) h += '<p class="hint">在「记忆」页确认待审核记忆后,档案会逐渐丰满起来。</p>';
   view.innerHTML = h;
+  view.querySelectorAll("[data-adep]").forEach(function (b) {
+    b.onclick = function () {
+      if (!confirm("停用这条记忆?它会从 AI 的档案里移除,但保留在历史中(可恢复)。")) return;
+      api("POST", "/api/archive/" + b.dataset.adep + "/status", { status: "deprecated" })
+        .then(function () { refreshAll(); toast("已停用"); })
+        .catch(function (err) { toast(err.message); });
+    };
+  });
+  view.querySelectorAll("[data-aret]").forEach(function (b) {
+    b.onclick = function () {
+      api("POST", "/api/archive/" + b.dataset.aret + "/status", { status: "active" })
+        .then(function () { refreshAll(); toast("已恢复"); })
+        .catch(function (err) { toast(err.message); });
+    };
+  });
   $("profileEdit").value = SECTIONS.map(function (s) {
     return "## " + s + "\n" + ((secs[s] || []).join("\n") || "(暂无)");
   }).join("\n\n");

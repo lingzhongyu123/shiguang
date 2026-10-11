@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS archive (
   updated TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')),
   source_entries INTEGER[] DEFAULT '{}',
   confidence REAL,
-  last_verified TEXT DEFAULT ''
+  last_verified TEXT DEFAULT '',
+  status TEXT DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -100,6 +101,7 @@ MIGRATIONS = [
     "ALTER TABLE archive ADD COLUMN IF NOT EXISTS last_verified TEXT DEFAULT ''",
     "ALTER TABLE pending_memories ADD COLUMN IF NOT EXISTS confidence REAL",
     "ALTER TABLE pending_memories ADD COLUMN IF NOT EXISTS note TEXT DEFAULT ''",
+    "ALTER TABLE archive ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
 ]
 
 
@@ -195,20 +197,28 @@ def goal_to_dict(row):
             "deadline": row["deadline"], "createdAt": row["created_at"]}
 
 
-def archive_sections(conn):
+SECTION_CAPS = {"长期背景": 15, "当前目标": 10, "长期偏好": 10,
+                "进行中的项目": 10, "经多次观察得到的模式": 8, "近期变化": 8}
+
+
+def archive_sections(conn, for_prompt=False):
+    """for_prompt=True 时只取 active 且按节限量(Context Builder 预算)。"""
     sections = {s: [] for s in config.SECTIONS}
     items = []
     updated = ""
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute("SELECT id, section, text, updated, source_entries, confidence,"
-                    " last_verified FROM archive ORDER BY id")
+                    " last_verified, status FROM archive ORDER BY id")
         for row in cur.fetchall():
-            if row["section"] in sections:
+            active = (row["status"] or "active") == "active"
+            if row["section"] in sections and active and \
+                    len(sections[row["section"]]) < (SECTION_CAPS[row["section"]] if for_prompt else 10 ** 6):
                 sections[row["section"]].append(row["text"])
             items.append({"id": row["id"], "section": row["section"], "text": row["text"],
                           "sources": list(row["source_entries"] or []),
                           "confidence": row["confidence"],
-                          "lastVerified": row["last_verified"] or ""})
+                          "lastVerified": row["last_verified"] or "",
+                          "status": row["status"] or "active"})
             if row["updated"] and row["updated"] > updated:
                 updated = row["updated"]
     return {"sections": sections, "items": items, "updated": updated}

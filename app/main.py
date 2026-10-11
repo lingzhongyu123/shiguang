@@ -23,17 +23,37 @@ def _vec_literal(vec):
 
 
 def search_related(conn, query_vec, top_k=5, exclude_entry=None):
-    """在 embeddings 表上做语义检索,返回相关历史(entry/memory)。"""
+    """混合评分检索:0.65*语义 + 0.20*时间衰减(半年衰期) + 0.15*来源权重。
+
+    pgvector 先按 cosine 粗召回 50 条,再在 Python 里精排。"""
     if not db.vector_ok() or query_vec is None:
         return []
-    q = ("SELECT e.source_type, e.source_id, e.content, en.date FROM embeddings e "
+    q = ("SELECT e.source_type, e.source_id, e.content, en.date,"
+         " (e.embedding <=> %s::vector) AS dist FROM embeddings e "
          "LEFT JOIN entries en ON e.source_type='entry' AND en.id=e.source_id "
          "WHERE (%s IS NULL OR e.source_id != %s OR e.source_type != 'entry') "
-         "ORDER BY e.embedding <=> %s::vector LIMIT %s")
+         "ORDER BY dist LIMIT 50")
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-        cur.execute(q, (exclude_entry, exclude_entry, _vec_literal(query_vec), top_k))
-        return [{"source_type": r["source_type"], "source_id": r["source_id"],
-                 "content": r["content"], "date": r["date"] or ""} for r in cur.fetchall()]
+        cur.execute(q, (_vec_literal(query_vec), exclude_entry, exclude_entry))
+        rows = cur.fetchall()
+    today = datetime.now().date()
+    scored = []
+    for r in rows:
+        sim = max(0.0, 1.0 - float(r["dist"]))
+        days = 365
+        if r["date"]:
+            try:
+                days = abs((today - datetime.strptime(str(r["date"])[:10], "%Y-%m-%d").date()).days)
+            except ValueError:
+                pass
+        decay = 2.718281828 ** (-days / 180.0)
+        imp = 0.7 if r["source_type"] == "memory" else 0.4  # 记忆是确认过的高价值内容
+        score = 0.65 * sim + 0.20 * decay + 0.15 * imp
+        scored.append((score, {"source_type": r["source_type"], "source_id": r["source_id"],
+                               "content": r["content"], "date": r["date"] or "",
+                               "score": round(score, 4)}))
+    scored.sort(key=lambda x: -x[0])
+    return [item for _, item in scored[:top_k]]
 
 
 def store_embedding(conn, source_type, source_id, content, vec):
@@ -137,7 +157,7 @@ def _process(jid, body):
     _job_update(jid, status="running", stage="embedding")
     query_vec = None
     with db.db() as conn:
-        sections = db.archive_sections(conn)["sections"]
+        sections = db.archive_sections(conn, for_prompt=True)["sections"]
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute("SELECT * FROM goals WHERE status='active' ORDER BY id")
             goals = [db.goal_to_dict(r) for r in cur.fetchall()]
@@ -297,6 +317,28 @@ def skip_pending(pid: int):
     with db.db() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE pending_memories SET status='discarded' WHERE id=%s", (pid,))
+    return {"ok": True}
+
+
+# ---------- archive lifecycle ----------
+
+class ArchiveStatusBody(BaseModel):
+    status: str  # active | deprecated
+
+
+@app.post("/api/archive/{aid}/status", dependencies=[Depends(auth.require_login)])
+def set_archive_status(aid: int, body: ArchiveStatusBody):
+    if body.status not in ("active", "deprecated"):
+        raise HTTPException(status_code=400, detail="状态不合法")
+    with db.db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE archive SET status=%s,"
+                        " updated=to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI:SS')"
+                        " WHERE id=%s", (body.status, aid))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="记忆不存在")
+            if body.status == "deprecated":
+                cur.execute("DELETE FROM embeddings WHERE source_type='memory' AND source_id=%s", (aid,))
     return {"ok": True}
 
 
