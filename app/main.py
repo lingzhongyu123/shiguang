@@ -663,6 +663,23 @@ def export_json():
         headers={"Content-Disposition": 'attachment; filename="shiguang-backup.json"'})
 
 
+def _import_event(cur, ev, fallback_date, entry_id):
+    """导入单条事件,(title,date,description) 判重 —— 删除过日志后重导入不翻倍。"""
+    title = ev.get("title", "")
+    date = ev.get("date") or fallback_date or ""
+    desc = ev.get("description", "")
+    cur.execute("SELECT 1 FROM events WHERE title=%s AND COALESCE(date,'')=%s"
+                " AND COALESCE(description,'')=%s", (title, date, desc))
+    if cur.fetchone():
+        return False
+    cur.execute(
+        "INSERT INTO events(title,description,event_type,date,importance,source_entry)"
+        " VALUES(%s,%s,%s,%s,%s,%s)",
+        (title, desc, ev.get("type", "life"), date,
+         int(ev.get("importance", 1) or 1), entry_id))
+    return True
+
+
 @app.post("/api/import", dependencies=[Depends(auth.require_login)])
 async def import_backup(request: Request):
     try:
@@ -705,17 +722,19 @@ async def import_backup(request: Request):
                     cat, line = parser.split_mem_line(line)
                     if cat is None:
                         cat = parser.guess_cat(line)
-                    cur.execute(
-                        "INSERT INTO pending_memories(text,cat,src_entry) VALUES(%s,%s,%s)",
-                        (line, cat, entry_id))
-                    n_pending += 1
+                    # 判重不看 status:删除过日志/确认过记忆后重导入,同文本不复活
+                    cur.execute("SELECT 1 FROM pending_memories WHERE text=%s", (line,))
+                    if not cur.fetchone():
+                        cur.execute(
+                            "INSERT INTO pending_memories(text,cat,src_entry) VALUES(%s,%s,%s)",
+                            (line, cat, entry_id))
+                        n_pending += 1
                 for ev in e.get("events", []):
-                    cur.execute(
-                        "INSERT INTO events(title,description,event_type,date,importance,source_entry)"
-                        " VALUES(%s,%s,%s,%s,%s,%s)",
-                        (ev.get("title", ""), ev.get("description", ""), ev.get("type", "life"),
-                         ev.get("date") or e.get("date", ""), int(ev.get("importance", 1) or 1),
-                         entry_id))
+                    _import_event(cur, ev, e.get("date", ""), entry_id)
+            # 顶层 events:导入未被任何日志吸收的孤儿事件(删除过日志的遗留,
+            # _entries_with_events 只把挂在现存日志上的事件放进 entries[].events)
+            for ev in d.get("events", []):
+                _import_event(cur, ev, "", None)
             prof = d.get("profile", {})
             # 优先用带证据链的 items(v1.2 备份),保真 source/confidence/lastVerified/status
             if isinstance(prof.get("items"), list) and prof["items"]:
@@ -744,8 +763,9 @@ async def import_backup(request: Request):
                                         (sec, item))
             for p in d.get("pending", []):
                 if p.get("text"):
-                    cur.execute("SELECT 1 FROM pending_memories WHERE text=%s"
-                                " AND status='pending'", (p.get("text", ""),))
+                    # 判重不看 status:已确认/已跳过的记忆重导入时不复活
+                    cur.execute("SELECT 1 FROM pending_memories WHERE text=%s",
+                                (p.get("text", ""),))
                     if not cur.fetchone():
                         cur.execute("INSERT INTO pending_memories(text,cat) VALUES(%s,%s)",
                                     (p.get("text", ""), p.get("cat", "长期背景")))
@@ -761,8 +781,9 @@ async def import_backup(request: Request):
                         n_todos += 1
             for g in d.get("goals", []):
                 if g.get("title"):
-                    cur.execute("SELECT 1 FROM goals WHERE title=%s AND status=%s",
-                                (g.get("title", ""), g.get("status", "active")))
+                    # 判重只看 title:目标推进到 done 后重导入不产生重复的 active 目标
+                    cur.execute("SELECT 1 FROM goals WHERE title=%s",
+                                (g.get("title", ""),))
                     if cur.fetchone():
                         continue
                 cur.execute("INSERT INTO goals(title,description,status,progress,deadline) VALUES(%s,%s,%s,%s,%s)",

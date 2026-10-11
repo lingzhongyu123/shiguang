@@ -111,7 +111,20 @@ function greet() {
 var _poller = null;
 
 function pollJob(jid, btn) {
-  if (_poller) { clearInterval(_poller.ival); }
+  if (_poller) {
+    // 覆盖旧轮询器前,先把旧任务的终态查一次:失败的原文暂存、完成的提示归档,
+    // 不让被顶掉的任务静默消失(典型:启动续接的任务被新提交覆盖)
+    var oldJid = _poller.jid;
+    clearInterval(_poller.ival);
+    _poller = null;
+    api("GET", "/api/jobs/" + oldJid).then(function (j) {
+      if (j.status === "done") { refreshAll(); toast("上一个任务已归档"); }
+      else if (j.status === "failed" && j.raw) {
+        try { localStorage.setItem("sg_failed_raw", j.raw); } catch (e) {}
+        toast("上一个任务处理失败,原文已暂存(清空输入框后刷新可找回)");
+      }
+    }).catch(function () {});
+  }
   var t0 = Date.now();
   try { localStorage.setItem("sg_job", JSON.stringify({ id: jid, t: t0 })); } catch (e) {}
   var errs = 0;  // 网络闪断容忍:连续 3 次失败才放弃
@@ -119,11 +132,15 @@ function pollJob(jid, btn) {
   function finish(job, errMsg) {
     clearInterval(p.ival);
     if (_poller === p) _poller = null;
-    // 归属检查:只清理自己那个任务的恢复状态(避免旧轮询器删掉新任务的)
-    try {
-      var j = JSON.parse(localStorage.getItem("sg_job") || "null");
-      if (!j || j.id === jid) localStorage.removeItem("sg_job");
-    } catch (e) {}
+    // job 为 null = 没拿到终态(网络断/登录过期/墙钟超时):保留 sg_job 供刷新后续接,
+    // 原文还在服务端 jobs 表里,不能因为前端断连就当任务没了
+    var known = !!job;
+    if (known) {
+      try {
+        var j = JSON.parse(localStorage.getItem("sg_job") || "null");
+        if (!j || j.id === jid) localStorage.removeItem("sg_job");
+      } catch (e) {}
+    }
     if (btn) {
       btn.disabled = false;
       btn.textContent = "提交并处理";
@@ -135,7 +152,9 @@ function pollJob(jid, btn) {
       toast("已归档");
     } else {
       var raw = job ? job.raw : "";
-      if (raw) {
+      if (!known) {
+        toast((errMsg || "连接中断") + " —— 任务仍在服务端,刷新页面可续接查看结果");
+      } else if (raw) {
         if (!$("inRaw").value.trim()) {
           $("inRaw").value = raw;  // 处理失败时把口述原文找回来,不丢内容
           toast("处理失败,原文已恢复到输入框:" + (errMsg || "未知错误"));
