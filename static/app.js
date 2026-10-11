@@ -126,7 +126,12 @@ $("btnProcess").onclick = function () {
           switchPane("log");
           toast("已归档");
         } else {
-          toast(job.error || "处理失败");
+          if (job.raw && !$("inRaw").value.trim()) {
+            $("inRaw").value = job.raw;  // 处理失败时把口述原文找回来,不丢内容
+            toast("处理失败,原文已恢复到输入框:" + (job.error || "未知错误"));
+          } else {
+            toast(job.error || "处理失败");
+          }
         }
       }).catch(function (e) {
         clearInterval(poll);

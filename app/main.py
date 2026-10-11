@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import uuid
 from datetime import datetime
 
@@ -74,11 +75,30 @@ class LoginBody(BaseModel):
 
 
 @app.post("/api/login")
-def login(body: LoginBody, response: Response):
+def login(body: LoginBody, request: Request, response: Response):
+    ip = request.client.host if request.client else "?"
+    rec = _login_fails.get(ip)
+    if rec and rec[0] >= 5 and time.time() - rec[1] < 600:
+        raise HTTPException(status_code=429, detail="尝试次数过多,请 10 分钟后再试")
     if not auth.verify_password(body.password):
+        fails = (rec[0] + 1) if rec else 1
+        _login_fails[ip] = (fails, time.time())
         raise HTTPException(status_code=401, detail="密码不对")
+    _login_fails.pop(ip, None)
     response.set_cookie(auth.COOKIE, auth.make_token(), max_age=auth.TTL,
-                        httponly=True, samesite="lax")
+                        httponly=True, samesite="lax", secure=True)
+    return {"ok": True}
+
+
+_login_fails = {}  # ip -> (连续失败次数, 最近失败时间)
+
+
+@app.get("/api/health")
+def health():
+    """无鉴权健康检查:keepalive 用它保持 Render 唤醒 + Supabase 不休眠(会真实连库)。"""
+    with db.db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
     return {"ok": True}
 
 
@@ -112,9 +132,11 @@ def process_log(body: ProcessBody, tasks: BackgroundTasks):
     if not body.raw and not body.mode:
         raise HTTPException(status_code=400, detail="口述内容和模式至少填一个")
     jid = uuid.uuid4().hex[:12]
+    # 原文随任务立即落库:处理失败/重启也不丢口述内容(第一原则:原始日志永久保留)
     with db.db() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO jobs(id,status) VALUES(%s,'queued')", (jid,))
+            cur.execute("INSERT INTO jobs(id,status,raw,mode) VALUES(%s,'queued',%s,%s)",
+                        (jid, body.raw, body.mode))
     tasks.add_task(_run_process, jid, body)
     return {"jobId": jid}
 
@@ -128,7 +150,8 @@ def get_job(jid: str):
             if not row:
                 raise HTTPException(status_code=404, detail="任务不存在或已过期")
             out = {"id": row["id"], "status": row["status"], "stage": row["stage"],
-                   "error": row["error"], "entryId": row["entry_id"]}
+                   "error": row["error"], "entryId": row["entry_id"],
+                   "raw": row["raw"] or ""}
             if row["status"] == "done" and row["entry_id"]:
                 cur.execute("SELECT * FROM entries WHERE id=%s", (row["entry_id"],))
                 e = cur.fetchone()
@@ -182,12 +205,13 @@ def _process(jid, body):
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(
-                "INSERT INTO entries(date,mode,raw,polished,summary,advice,mempack,profile_delta,evidence,llm_reply)"
-                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                "INSERT INTO entries(date,mode,raw,polished,summary,advice,mempack,profile_delta,evidence,llm_reply,prompt_version,model)"
+                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
                 (parsed["date"], parsed["mode"], parsed["raw"], parsed["polished"],
                  parsed["summary"], json.dumps(parsed["advice"], ensure_ascii=False),
                  json.dumps([m["text"] for m in parsed["memories"]], ensure_ascii=False),
-                 parsed["profileDelta"], parsed["evi"], reply))
+                 parsed["profileDelta"], parsed["evi"], reply,
+                 llm.PROMPT_VERSION, llm.model_for(deep)))
             row = cur.fetchone()
             entry_id = row["id"]
             for m in parsed["memories"]:
@@ -223,9 +247,11 @@ def _process(jid, body):
 
 # ---------- entries ----------
 
-def _entries_with_events(conn):
+def _entries_with_events(conn, limit=500):
+    """limit=None 时不截断(备份导出必须全量)。"""
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-        cur.execute("SELECT * FROM entries ORDER BY id DESC LIMIT 500")
+        cur.execute("SELECT * FROM entries ORDER BY id DESC" +
+                    (" LIMIT %d" % limit if limit else ""))
         entries = [db.entry_to_dict(r) for r in cur.fetchall()]
         cur.execute("SELECT * FROM events ORDER BY importance DESC, id")
         events = [db.event_to_dict(r) for r in cur.fetchall()]
@@ -329,15 +355,17 @@ def confirm_pending(pid: int, body: ConfirmBody):
                     " VALUES(%s,%s,%s,%s,%s) RETURNING id",
                     (body.cat, row["text"], src, row["confidence"], today))
                 aid = cur.fetchone()["id"]
-                # 记忆也进向量库,供语义检索
-                if db.vector_ok():
-                    try:
-                        vec = llm.embed_texts([row["text"][:1000]])[0]
-                        store_embedding(conn, "memory", aid, row["text"], vec)
-                    except Exception:
-                        conn.rollback()
             cur.execute("UPDATE pending_memories SET status='archived', cat=%s WHERE id=%s",
                         (body.cat, pid))
+        conn.commit()  # 核心数据(确认的记忆)先落库;向量只是索引,失败不应回滚事实
+        if not existing and db.vector_ok():
+            # 记忆也进向量库,供语义检索;独立事务,失败可接受
+            try:
+                vec = llm.embed_texts([row["text"][:1000]])[0]
+                store_embedding(conn, "memory", aid, row["text"], vec)
+                conn.commit()
+            except Exception:
+                conn.rollback()
     return {"ok": True}
 
 
@@ -566,17 +594,21 @@ def put_profile(body: ProfileBody):
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute("DELETE FROM embeddings WHERE source_type='memory'")
             cur.execute("DELETE FROM archive")
+            aids = []
             for sec, items in sections.items():
                 for item in items:
                     cur.execute("INSERT INTO archive(section,text,updated) VALUES(%s,%s,%s) RETURNING id",
                                 (sec, item, now))
-                    aid = cur.fetchone()["id"]
-                    if db.vector_ok():
-                        try:
-                            vec = llm.embed_texts([item[:1000]])[0]
-                            store_embedding(conn, "memory", aid, item, vec)
-                        except Exception:
-                            conn.rollback()
+                    aids.append((cur.fetchone()["id"], item))
+        conn.commit()  # 档案本体先落库;向量重建失败不回滚档案
+        if db.vector_ok():
+            for aid, item in aids:
+                try:
+                    vec = llm.embed_texts([item[:1000]])[0]
+                    store_embedding(conn, "memory", aid, item, vec)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
     return {"ok": True}
 
 
@@ -593,7 +625,7 @@ def _export_data():
             events = [db.event_to_dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM goals ORDER BY id")
             goals = [db.goal_to_dict(r) for r in cur.fetchall()]
-            rows = _entries_with_events(conn)
+            rows = _entries_with_events(conn, limit=None)  # 备份必须全量,不截断
         return {
             "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "profile": db.archive_sections(conn),
@@ -630,15 +662,23 @@ async def import_backup(request: Request):
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             for e in d.get("entries", []):
+                # 幂等:同一 (date, raw) 的日志已存在则跳过,重复导入不翻倍
+                if e.get("raw"):
+                    cur.execute("SELECT 1 FROM entries WHERE date=%s AND raw=%s",
+                                (e.get("date", ""), e.get("raw", "")))
+                    if cur.fetchone():
+                        continue
                 cur.execute(
-                    "INSERT INTO entries(date,mode,raw,polished,summary,advice,mempack,profile_delta,evidence)"
-                    " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    "INSERT INTO entries(date,mode,raw,polished,summary,advice,mempack,profile_delta,evidence,prompt_version,model)"
+                    " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     (e.get("date", ""), e.get("mode", ""), e.get("raw", ""),
                      e.get("polished", ""), e.get("summary", ""),
                      json.dumps(e.get("advice", []), ensure_ascii=False),
                      json.dumps(e.get("memPack", e.get("mempack", [])), ensure_ascii=False),
                      e.get("profileDelta", e.get("profile_delta", "")),
-                     e.get("evi", e.get("evidence", ""))))
+                     e.get("evi", e.get("evidence", "")),
+                     e.get("promptVersion", e.get("prompt_version", "")),
+                     e.get("model", "")))
                 entry_id = cur.fetchone()["id"]
                 n_entries += 1
                 for m in e.get("memPack", e.get("mempack", [])):
@@ -655,18 +695,34 @@ async def import_backup(request: Request):
                         "INSERT INTO events(title,description,event_type,date,importance,source_entry)"
                         " VALUES(%s,%s,%s,%s,%s,%s)",
                         (ev.get("title", ""), ev.get("description", ""), ev.get("type", "life"),
-                         e.get("date", ""), int(ev.get("importance", 1) or 1), entry_id))
+                         ev.get("date") or e.get("date", ""), int(ev.get("importance", 1) or 1),
+                         entry_id))
             prof = d.get("profile", {})
-            old_sections = prof.get("sections") or prof  # 兼容原型格式 {节名: [..]}
-            for sec, items in old_sections.items():
-                if sec not in config.SECTIONS or not isinstance(items, list):
-                    continue
-                for item in items:
+            # 优先用带证据链的 items(v1.2 备份),保真 source/confidence/lastVerified/status
+            if isinstance(prof.get("items"), list) and prof["items"]:
+                for item in prof["items"]:
+                    if item.get("section") not in config.SECTIONS or not item.get("text"):
+                        continue
                     cur.execute("SELECT 1 FROM archive WHERE section=%s AND text=%s",
-                                (sec, item))
+                                (item["section"], item["text"]))
                     if not cur.fetchone():
-                        cur.execute("INSERT INTO archive(section,text) VALUES(%s,%s)",
+                        cur.execute(
+                            "INSERT INTO archive(section,text,source_entries,confidence,last_verified,status)"
+                            " VALUES(%s,%s,%s,%s,%s,%s)",
+                            (item["section"], item["text"],
+                             item.get("sources") or [], item.get("confidence"),
+                             item.get("lastVerified") or "", item.get("status") or "active"))
+            else:
+                old_sections = prof.get("sections") or prof  # 兼容原型格式 {节名: [..]}
+                for sec, items in old_sections.items():
+                    if sec not in config.SECTIONS or not isinstance(items, list):
+                        continue
+                    for item in items:
+                        cur.execute("SELECT 1 FROM archive WHERE section=%s AND text=%s",
                                     (sec, item))
+                        if not cur.fetchone():
+                            cur.execute("INSERT INTO archive(section,text) VALUES(%s,%s)",
+                                        (sec, item))
             for p in d.get("pending", []):
                 cur.execute("INSERT INTO pending_memories(text,cat) VALUES(%s,%s)",
                             (p.get("text", ""), p.get("cat", "长期背景")))

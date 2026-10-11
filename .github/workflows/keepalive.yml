@@ -7,4 +7,5 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - run: curl -s -o /dev/null -w "%{http_code}" https://shiguang-ryos.onrender.com/api/profile
+      - run: curl -fsS -o /dev/null https://shiguang-ryos.onrender.com/api/health
+        # /api/health 无鉴权但会真实连库:既保 Render 唤醒,也防 Supabase 7 天不活动休眠

@@ -113,6 +113,12 @@ class LLMError(Exception):
 
 DEEP_MODES = ("/周总结", "/月总结", "/深度复盘")
 
+PROMPT_VERSION = "v1.2-json"
+
+
+def model_for(deep=False):
+    return config.GLM_MODEL_DEEP if deep and config.GLM_MODEL_DEEP else config.GLM_MODEL
+
 
 def build_user_prompt(sections, goals, recent, related, raw, date, mode):
     """Context Builder:档案 + 活跃目标 + 最近日志 + 语义相关记忆。"""
@@ -151,7 +157,7 @@ def build_user_prompt(sections, goals, recent, related, raw, date, mode):
 def call_glm(user_prompt, deep=False):
     if not config.ZHIPU_API_KEY:
         raise LLMError("未配置 ZHIPU_API_KEY")
-    model = (config.GLM_MODEL_DEEP if deep and config.GLM_MODEL_DEEP else config.GLM_MODEL)
+    model = model_for(deep)
     body = {
         "model": model,
         "messages": [

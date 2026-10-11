@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS entries (
   profile_delta TEXT DEFAULT '',
   evidence TEXT DEFAULT '',
   llm_reply TEXT DEFAULT '',
+  prompt_version TEXT DEFAULT '',
+  model TEXT DEFAULT '',
   created_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'))
 );
 CREATE TABLE IF NOT EXISTS pending_memories (
@@ -48,6 +50,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   status TEXT NOT NULL DEFAULT 'queued',
   stage TEXT DEFAULT '',
   error TEXT DEFAULT '',
+  raw TEXT DEFAULT '',
+  mode TEXT DEFAULT '',
   entry_id INTEGER,
   created_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')),
   updated_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'))
@@ -102,6 +106,10 @@ MIGRATIONS = [
     "ALTER TABLE pending_memories ADD COLUMN IF NOT EXISTS confidence REAL",
     "ALTER TABLE pending_memories ADD COLUMN IF NOT EXISTS note TEXT DEFAULT ''",
     "ALTER TABLE archive ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS raw TEXT DEFAULT ''",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS mode TEXT DEFAULT ''",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS prompt_version TEXT DEFAULT ''",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS model TEXT DEFAULT ''",
 ]
 
 
@@ -162,6 +170,7 @@ def entry_to_dict(row):
         "polished": row["polished"], "summary": row["summary"],
         "advice": json.loads(row["advice"]), "mempack": json.loads(row["mempack"]),
         "profileDelta": row["profile_delta"], "evi": row["evidence"],
+        "promptVersion": row.get("prompt_version", ""), "model": row.get("model", ""),
         "createdAt": row["created_at"],
     }
 
