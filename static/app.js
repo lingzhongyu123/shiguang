@@ -10,6 +10,15 @@ function esc(s) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
   });
 }
+/* 轻量 markdown 渲染:先转义再替换,只认标题/加粗/斜体/行内代码/列表符 */
+function md(s) {
+  return esc(s)
+    .replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\*([^*\n]+)\*/g, "<i>$1</i>")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/^\s*[-•]\s+/gm, "· ");
+}
 function toast(msg) {
   var t = $("toast");
   t.textContent = msg;
@@ -178,9 +187,9 @@ function renderLog() {
       '<button data-et="复盘">复盘</button>' +
       '<button data-et="记忆">记忆</button>' +
       '<button data-et="画像">画像</button></div>';
-    h += '<div class="ebody" data-eb="整理">' + esc(e.polished || "(无正文)") + "</div>";
+    h += '<div class="ebody" data-eb="整理">' + md(e.polished || "(无正文)") + "</div>";
     h += '<div class="ebody" data-eb="复盘" hidden>';
-    if (e.summary) h += '<div class="hint" style="color:var(--fg)">内容提炼</div><div>' + esc(e.summary) + "</div>";
+    if (e.summary) h += '<div class="hint" style="color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
     if (e.advice && e.advice.length) {
       h += '<div class="hint" style="margin-top:8px">观察与建议:</div><ul class="plain">';
       e.advice.forEach(function (a, i) {
