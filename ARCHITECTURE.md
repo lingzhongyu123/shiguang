@@ -1,6 +1,6 @@
 # 拾光 · 个人成长日志 Agent — 架构与方案
 
-> 版本:v1.0(2026-10-11 已部署上线)
+> 版本:v1.2(2026-10-11 已部署上线)
 > 网址:https://shiguang-ryos.onrender.com
 
 ## 一、系统定位
@@ -182,3 +182,27 @@ shiguang/
   deploy.py       (备用)zx0094 服务器部署脚本
   ARCHITECTURE.md 本文档
 ```
+
+## 十、v1.1 → v1.2 演进记录
+
+### v1.1:长期记忆能力
+- pgvector + 智谱 embedding-3(1024 维,HNSW),日志与确认记忆均向量化
+- 语义检索 top-5 注入提示词(Context Builder:档案 + 活跃目标 + 最近 3 条 + 相关 5 条)
+- events 表 + AI 事件提取;goals 表 + 停滞检测(daysIdle ≥ 7 提醒)
+- 模型分层:glm-5.3 日常(thinking.level=low)/ GLM_MODEL_DEEP 深度模式
+- 处理异步化:POST /api/process 立即返回 jobId,前端轮询
+
+### v1.2:长期可靠性
+- **JSON 结构化输出**:System Prompt 第三节改为 JSON 契约;parse_json_result 提取平衡
+  JSON 并归一校验,失败回退旧六段解析。记忆带 category/confidence/note
+- **jobs 状态机**:queued → running(embedding/generating/saving)→ done/failed,落库不怕重启
+- **事务保护**:entry+待审记忆+事件先 commit,向量写入独立事务,失败不回滚核心数据
+- **记忆溯源**:archive.source_entries[]/confidence/last_verified,确认时写入来源日志
+- **记忆生命周期**:archive.status(active/deprecated),停用即退出提示词与向量索引,历史保留可恢复
+- **Context Builder 预算**:注入仅取 active,每节限量(15/10/10/10/8/8)
+- **混合检索**:cosine 粗召回 50 → 0.65*语义 + 0.20*exp(-days/180) + 0.15*来源权重 精排
+- 保活:GitHub Actions 每 10 分钟 ping
+
+### 待办(P2/P3)
+- 每日自动备份到私有仓库;周报自动生成;prompt/model 版本记录;建议反馈;
+  档案溯源 UI 跳转;reranker(数据 >500 条后)
