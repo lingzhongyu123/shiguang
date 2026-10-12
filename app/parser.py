@@ -209,9 +209,9 @@ def parse_json_result(text, raw, date, mode):
         if a.get("observation"):
             line += "观察:" + str(a["observation"]).strip()
         if a.get("suggestion"):
-            line += (";" if line else "") + "建议:" + str(a["suggestion"]).strip()
+            line += ("\n" if line else "") + "建议:" + str(a["suggestion"]).strip()
         if a.get("question"):
-            line += (";" if line else "") + "思考:" + str(a["question"]).strip()
+            line += ("\n" if line else "") + "思考:" + str(a["question"]).strip()
         if line:
             advice.append(line)
 

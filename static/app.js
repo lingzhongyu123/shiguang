@@ -245,7 +245,10 @@ function renderLog() {
     if (e.advice && e.advice.length) {
       h += '<div class="hint" style="margin-top:8px">观察与建议:</div><ul class="plain">';
       e.advice.forEach(function (a, i) {
-        h += '<li><div class="tx">' + esc(a) + '</div><button class="btn small ghost" data-todo="' + e.id + ":" + i + '">转为待办</button></li>';
+        // 观察/建议/思考分行展示(以行首关键词标色),旧数据的分号格式原样显示
+        var html = esc(a).replace(/\n/g, "<br>")
+          .replace(/(^|<br>)(观察|建议|思考):/g, '$1<b>$2:</b>');
+        h += '<li><div class="tx">' + html + '</div><button class="btn small ghost" data-todo="' + e.id + ":" + i + '">转为待办</button></li>';
       });
       h += "</ul>";
     }
@@ -288,7 +291,10 @@ function renderLog() {
       var parts = b.dataset.todo.split(":");
       var e = state.entries.filter(function (x) { return String(x.id) === parts[0]; })[0];
       if (!e || !e.advice[+parts[1]]) return;
-      api("POST", "/api/todos", { text: e.advice[+parts[1]], src_entry: e.id }).then(function () {
+      // 优先取"建议:"那行作为待办;没有则用整条
+      var lines = e.advice[+parts[1]].split("\n");
+      var sug = lines.filter(function (l) { return l.indexOf("建议:") === 0; })[0] || lines[0];
+      api("POST", "/api/todos", { text: sug.replace(/^建议:\s*/, ""), src_entry: e.id }).then(function () {
         refreshAll();
         toast("已加入行动事项");
         switchPane("mem");

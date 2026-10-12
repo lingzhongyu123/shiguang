@@ -36,7 +36,7 @@ def to_markdown(data):
         if e["summary"]:
             L += ["**内容提炼**", e["summary"], ""]
         if e["advice"]:
-            L += ["**观察与建议**"] + ["- " + a for a in e["advice"]] + [""]
+            L += ["**观察与建议**"] + ["- " + a.replace("\n", "\n  ") for a in e["advice"]] + [""]
         if e["profileDelta"]:
             L += ["**画像变化**", e["profileDelta"], ""]
         if e["raw"]:
