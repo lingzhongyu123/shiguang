@@ -158,6 +158,7 @@ function pollJob(jid, btn) {
     if (job && job.status === "missing") {
       toast("任务记录已不存在(可能恢复过备份),无法续接");
     } else if (job && job.status === "done") {
+      _jumpToNew = true;  // 新日志在日志页自动展开定位
       refreshAll();
       if (btn) switchPane("log");
       toast("已归档");
@@ -224,63 +225,121 @@ $("btnProcess").onclick = function () {
   });
 };
 
-/* ---- 日志 ---- */
+/* ---- 日志(按日期分组的线性表,点开日期再看单条) ---- */
+var _openDates = null;   // 展开的日期集合;null 表示首次渲染只展开最新一天
+var _openEntries = {};   // 展开的日志 id → true
+var _jumpToNew = false;  // 刚归档的新日志:自动展开其日期和正文
+
+function fmtDate(d) {
+  var m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(d || "");
+  if (!m) return d || "未注明日期";
+  var wd = ["日", "一", "二", "三", "四", "五", "六"][new Date(+m[1], +m[2] - 1, +m[3]).getDay()];
+  var s = +m[2] + "月" + +m[3] + "日 星期" + wd;
+  if (+m[1] !== new Date().getFullYear()) s += " " + m[1];
+  return s;
+}
+
+function entryTitle(e) {  // 折叠态的单行预览
+  var t = (e.polished || "").split("\n")[0].replace(/^#+\s*/, "");
+  if (!t) t = (e.summary || "").split("\n")[0];
+  return t || "(无正文)";
+}
+
 function renderLog() {
   var box = $("logList");
   if (!state.entries.length) {
     box.innerHTML = '<div class="card empty">还没有归档的日志。<br>回「记录」页,说第一段吧。</div>';
     return;
   }
-  box.innerHTML = state.entries.map(function (e) {
-    var h = '<div class="card"><div class="edate">' + esc(e.date || "未注明日期") +
-      (e.mode ? " · " + esc(e.mode) : "") + "</div>";
-    h += '<div class="etabs">' +
-      '<button class="active" data-et="整理">整理</button>' +
-      '<button data-et="复盘">复盘</button>' +
-      '<button data-et="记忆">记忆</button>' +
-      '<button data-et="画像">画像</button></div>';
-    h += '<div class="ebody" data-eb="整理">' + md(e.polished || "(无正文)") + "</div>";
-    h += '<div class="ebody" data-eb="复盘" hidden>';
-    if (e.summary) h += '<div class="hint" style="color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
-    if (e.advice && e.advice.length) {
-      h += '<div class="hint" style="margin-top:8px">观察与建议:</div><ul class="plain">';
-      e.advice.forEach(function (a, i) {
-        // 观察/建议/思考分行展示(以行首关键词标色),旧数据的分号格式原样显示
-        var html = esc(a).replace(/\n/g, "<br>")
-          .replace(/(^|<br>)(观察|建议|思考):/g, '$1<b>$2:</b>');
-        h += '<li><div class="tx">' + html + '</div><button class="btn small ghost" data-todo="' + e.id + ":" + i + '">转为待办</button></li>';
-      });
-      h += "</ul>";
-    }
-    if (!e.summary && !(e.advice && e.advice.length)) h += '<span class="hint">(本次无复盘内容)</span>';
-    h += "</div>";
-    h += '<div class="ebody" data-eb="记忆" hidden>';
-    if (e.mempack && e.mempack.length) {
-      h += '<ul class="plain">';
-      e.mempack.forEach(function (m) { h += "<li>" + esc(typeof m === "string" ? m : m.text) + "</li>"; });
-      h += "</ul>";
-    } else h += '<span class="hint">(本次无记忆更新)</span>';
-    h += "</div>";
-    h += '<div class="ebody" data-eb="画像" hidden>';
-    if (e.profileDelta) h += esc(e.profileDelta) + (e.evi ? '<div><span class="chip acc">证据 ' + esc(e.evi) + "</span></div>" : "");
-    else h += '<span class="hint">(本次画像不变)</span>';
-    h += "</div>";
-    if (e.events && e.events.length) {
-      h += '<div class="hint" style="margin-top:8px">本次事件:</div><ul class="plain">';
-      e.events.forEach(function (ev) {
-        h += '<li><span class="chip">' + esc(ev.type) + '</span> <b>' + esc(ev.title) + "</b>" +
-             (ev.description ? " — " + esc(ev.description) : "") + "</li>";
-      });
-      h += "</ul>";
-    }
-    if (e.raw) h += '<details style="margin-top:8px"><summary>原始口述</summary><div class="hint" style="white-space:pre-wrap">' + esc(e.raw) + "</div></details>";
-    h += '<div class="row" style="margin-top:8px"><button class="btn danger small" data-del="' + e.id + '">删除</button></div></div>';
-    return h;
+  // 按日期分组(entries 已按 id 倒序 → 日期天然从新到旧)
+  var groups = [];
+  var byDate = {};
+  state.entries.forEach(function (e) {
+    var k = (e.date || "").slice(0, 10) || "未注明日期";
+    if (!byDate[k]) { byDate[k] = []; groups.push(k); }
+    byDate[k].push(e);
+  });
+  if (_openDates === null) _openDates = {};
+  if (_jumpToNew && state.entries.length) {
+    var ne = state.entries[0];  // entries 按 id 倒序,最新在前
+    _openDates[(ne.date || "").slice(0, 10) || "未注明日期"] = true;
+    _openEntries[ne.id] = true;
+    _jumpToNew = false;
+  }
+  var h = groups.map(function (k) {
+    var open = _openDates === true || _openDates[k];
+    var hs = '<div class="card dgroup' + (open ? " open" : "") + '" data-date="' + esc(k) + '">' +
+      '<div class="dhead" data-date="' + esc(k) + '"><span class="darrow">' + (open ? "▾" : "▸") +
+      '</span><b>' + esc(/^未注明/.test(k) ? k : fmtDate(k)) + '</b>' +
+      '<span class="dcount">' + byDate[k].length + ' 条</span></div>' +
+      '<div class="dbody"' + (open ? "" : " hidden") + ">";
+    hs += byDate[k].map(function (e) {
+      var eo = _openEntries[e.id];
+      var card = '<div class="ecard' + (eo ? "" : " collapsed") + '" data-eid="' + e.id + '">' +
+        '<div class="ehead">' + esc(entryTitle(e)) +
+        (e.mode ? ' <span class="chip">' + esc(e.mode) + "</span>" : "") +
+        '<span class="darrow">' + (eo ? "▾" : "▸") + "</span></div>" +
+        '<div class="efull"' + (eo ? "" : " hidden") + ">";
+      card += '<div class="ebody" data-eb="整理">' + md(e.polished || "(无正文)") + "</div>";
+      card += '<div class="ebody" data-eb="复盘" hidden>';
+      if (e.summary) card += '<div class="hint" style="color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
+      if (e.advice && e.advice.length) {
+        card += '<div class="hint" style="margin-top:8px">观察与建议:</div><ul class="plain">';
+        e.advice.forEach(function (a, i) {
+          // 观察/建议/思考分行展示(以行首关键词标色),旧数据的分号格式原样显示
+          var html = esc(a).replace(/\n/g, "<br>")
+            .replace(/(^|<br>)(观察|建议|思考):/g, '$1<b>$2:</b>');
+          card += '<li><div class="tx">' + html + '</div><button class="btn small ghost" data-todo="' + e.id + ":" + i + '">转为待办</button></li>';
+        });
+        card += "</ul>";
+      }
+      if (!e.summary && !(e.advice && e.advice.length)) card += '<span class="hint">(本次无复盘内容)</span>';
+      card += "</div>";
+      card += '<div class="ebody" data-eb="记忆" hidden>';
+      if (e.mempack && e.mempack.length) {
+        card += '<ul class="plain">';
+        e.mempack.forEach(function (m) { card += "<li>" + esc(typeof m === "string" ? m : m.text) + "</li>"; });
+        card += "</ul>";
+      } else card += '<span class="hint">(本次无记忆更新)</span>';
+      card += "</div>";
+      card += '<div class="ebody" data-eb="画像" hidden>';
+      if (e.profileDelta) card += esc(e.profileDelta) + (e.evi ? '<div><span class="chip acc">证据 ' + esc(e.evi) + "</span></div>" : "");
+      else card += '<span class="hint">(本次画像不变)</span>';
+      card += "</div>";
+      if (e.events && e.events.length) {
+        card += '<div class="hint" style="margin-top:8px">本次事件:</div><ul class="plain">';
+        e.events.forEach(function (ev) {
+          card += '<li><span class="chip">' + esc(ev.type) + '</span> <b>' + esc(ev.title) + "</b>" +
+               (ev.description ? " — " + esc(ev.description) : "") + "</li>";
+        });
+        card += "</ul>";
+      }
+      if (e.raw) card += '<details style="margin-top:8px"><summary>原始口述</summary><div class="hint" style="white-space:pre-wrap">' + esc(e.raw) + "</div></details>";
+      card += '<div class="row" style="margin-top:8px"><button class="btn danger small" data-del="' + e.id + '">删除</button></div>';
+      return card + "</div></div>";  // 关 efull + ecard
+    }).join("");
+    return hs + "</div></div>";  // 关 dbody + dgroup
   }).join("");
+  box.innerHTML = h;
 
-  box.querySelectorAll(".etabs button").forEach(function (b) {
+  box.querySelectorAll(".dhead").forEach(function (b) {
     b.onclick = function () {
-      var card = b.closest(".card");
+      var k = b.dataset.date;
+      if (_openDates[k]) delete _openDates[k]; else _openDates[k] = true;
+      renderLog();
+    };
+  });
+  box.querySelectorAll(".ehead").forEach(function (b) {
+    b.onclick = function () {
+      var id = +b.closest(".ecard").dataset.eid;
+      if (_openEntries[id]) delete _openEntries[id]; else _openEntries[id] = true;
+      renderLog();
+    };
+  });
+  box.querySelectorAll(".etabs button").forEach(function (b) {
+    b.onclick = function (e) {
+      e.stopPropagation();
+      var card = b.closest(".ecard");
       card.querySelectorAll(".etabs button").forEach(function (x) { x.classList.remove("active"); });
       b.classList.add("active");
       card.querySelectorAll(".ebody").forEach(function (x) { x.hidden = x.dataset.eb !== b.dataset.et; });

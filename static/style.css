@@ -203,3 +203,15 @@ ul.plain li:last-child { border-bottom: none; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+/* ---- 日志页:按日期分组 ---- */
+.dgroup { padding: 0; overflow: hidden; }
+.dhead { display: flex; align-items: center; gap: 8px; padding: 12px 14px; cursor: pointer; user-select: none; }
+.dhead .dcount { margin-left: auto; color: var(--muted); font-size: 12px; }
+.darrow { color: var(--muted); font-size: 12px; width: 1em; display: inline-block; }
+.dbody { border-top: 1px solid var(--line); padding: 10px 12px; }
+.ecard { border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; }
+.ecard.collapsed { background: transparent; }
+.ehead { display: flex; align-items: center; gap: 6px; padding: 10px 12px; cursor: pointer; user-select: none; font-size: 14px; }
+.ehead .darrow { margin-left: auto; }
+.efull { border-top: 1px solid var(--line); padding: 10px 12px 12px; }
