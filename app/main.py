@@ -14,6 +14,17 @@ from . import auth, config, db, export, llm, parser
 
 app = FastAPI(title="拾光")
 
+
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    """入口 HTML 不缓存(静态 js/css 靠 ?v= 版本号失效):
+    手机浏览器/运营 商代理缓存 index.html 会让用户永远看到旧版应用。"""
+    resp = await call_next(request)
+    ct = resp.headers.get("content-type", "")
+    if "text/html" in ct:
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
 STATIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 
 
