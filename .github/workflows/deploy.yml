@@ -1,0 +1,31 @@
+name: deploy
+# 推送 main 即自动部署(本机到 api.render.com 网络不稳,借 GitHub 的网络触发)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        env:
+          RENDER_API: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          if [ -z "$RENDER_API" ]; then
+            echo "RENDER_API_KEY secret 未配置,跳过(去仓库 Settings→Secrets→Actions 添加)"
+            exit 0
+          fi
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -m 30 -o resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $RENDER_API" \
+              -H "Content-Type: application/json" \
+              -d '{"clearCache":"do_not_clear"}' \
+              "https://api.render.com/v1/services/srv-db5gq5t9fdbs73cr46bg/deploys")
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "201" ] && cat resp.json && exit 0
+            sleep 20
+          done
+          cat resp.json 2>/dev/null || true
+          exit 1
