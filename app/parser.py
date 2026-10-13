@@ -94,8 +94,8 @@ def _unesc(s):
                 .replace("\\/", "/").replace("\\t", "\t"))
 
 
-_NEXT_KEY = ('summary', 'advice', 'memories', 'profile_delta', 'evidence',
-             'events', 'skip_note')
+_NEXT_KEY = ('summary', 'understanding', 'growth', 'advice', 'takeaway',
+             'memories', 'profile_delta', 'evidence', 'events', 'skip_note')
 
 
 def _salvage_string(text, key):
@@ -126,6 +126,10 @@ def _salvage_fields(text):
     m = re.search(r'"theme"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
     if m:
         out["theme"] = _unesc(m.group(1))
+    for key in ("understanding", "growth", "takeaway"):
+        v = _salvage_string(text, key)
+        if v:
+            out[key] = v
     for key in ("advice", "memories", "events"):
         m = re.search(r'"%s"\s*:\s*\[' % key, text)
         if not m:
@@ -171,6 +175,9 @@ def parse_json_result(text, raw, date, mode):
         if salv.get("polished"):
             d = {"polished": salv["polished"],
                  "summary": {"theme": salv.get("theme", ""), "points": []},
+                 "understanding": salv.get("understanding", ""),
+                 "growth": salv.get("growth", ""),
+                 "takeaway": salv.get("takeaway", ""),
                  "advice": salv.get("advice", []),
                  "memories": salv.get("memories", []),
                  "events": salv.get("events", [])}
@@ -185,6 +192,9 @@ def parse_json_result(text, raw, date, mode):
         legacy["memories"] = memories
         legacy["skipNote"] = ""
         legacy["format"] = "legacy"
+        legacy.setdefault("understanding", "")
+        legacy.setdefault("growth", "")
+        legacy.setdefault("takeaway", "")
         return legacy
 
     polished = str(d.get("polished") or "").strip()
@@ -212,6 +222,8 @@ def parse_json_result(text, raw, date, mode):
             line += ("\n" if line else "") + "建议:" + str(a["suggestion"]).strip()
         if a.get("question"):
             line += ("\n" if line else "") + "思考:" + str(a["question"]).strip()
+        if a.get("purpose"):
+            line += ("\n" if line else "") + "目的:" + str(a["purpose"]).strip()
         if line:
             advice.append(line)
 
@@ -259,6 +271,9 @@ def parse_json_result(text, raw, date, mode):
 
     return {"date": date, "mode": mode or "", "raw": raw,
             "polished": polished, "summary": summary, "advice": advice,
+            "understanding": str(d.get("understanding") or "").strip(),
+            "growth": str(d.get("growth") or "").strip(),
+            "takeaway": str(d.get("takeaway") or "").strip(),
             "memories": mem, "profileDelta": str(d.get("profile_delta") or "").strip(),
             "evi": evi, "events": events,
             "skipNote": str(d.get("skip_note") or "").strip(),

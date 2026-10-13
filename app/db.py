@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS entries (
   raw TEXT DEFAULT '',
   polished TEXT DEFAULT '',
   summary TEXT DEFAULT '',
+  understanding TEXT DEFAULT '',
+  growth TEXT DEFAULT '',
+  takeaway TEXT DEFAULT '',
   advice TEXT DEFAULT '[]',
   mempack TEXT DEFAULT '[]',
   profile_delta TEXT DEFAULT '',
@@ -111,6 +114,9 @@ MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS mode TEXT DEFAULT ''",
     "ALTER TABLE entries ADD COLUMN IF NOT EXISTS prompt_version TEXT DEFAULT ''",
     "ALTER TABLE entries ADD COLUMN IF NOT EXISTS model TEXT DEFAULT ''",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS understanding TEXT DEFAULT ''",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS growth TEXT DEFAULT ''",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS takeaway TEXT DEFAULT ''",
 ]
 
 
@@ -180,6 +186,9 @@ def entry_to_dict(row):
     return {
         "id": row["id"], "date": row["date"], "mode": row["mode"], "raw": row["raw"],
         "polished": row["polished"], "summary": row["summary"],
+        "understanding": row.get("understanding") or "",
+        "growth": row.get("growth") or "",
+        "takeaway": row.get("takeaway") or "",
         "advice": json.loads(row["advice"]), "mempack": json.loads(row["mempack"]),
         "profileDelta": row["profile_delta"], "evi": row["evidence"],
         "promptVersion": row.get("prompt_version", ""), "model": row.get("model", ""),

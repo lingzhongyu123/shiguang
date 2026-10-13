@@ -166,6 +166,15 @@ details summary { cursor: pointer; color: var(--accent); font-size: 13.5px; marg
 }
 .etabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .ebody { white-space: pre-wrap; min-width: 0; overflow-wrap: anywhere; }
+/* 一句话总结:导师收尾句,卡片式强调 */
+.takeaway {
+  margin-top: 12px; padding: 10px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 10px 10px 0;
+  font-family: var(--font-display);
+  font-size: 15px;
+}
 .edate { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 ul.plain { list-style: none; padding: 0; margin: 6px 0 0; }
 ul.plain li { padding: 6px 0; border-bottom: 1px dashed var(--line); }

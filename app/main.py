@@ -229,10 +229,12 @@ def _process(jid, body):
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute(
-                "INSERT INTO entries(date,mode,raw,polished,summary,advice,mempack,profile_delta,evidence,llm_reply,prompt_version,model)"
-                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                "INSERT INTO entries(date,mode,raw,polished,summary,understanding,growth,takeaway,advice,mempack,profile_delta,evidence,llm_reply,prompt_version,model)"
+                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
                 (parsed["date"], parsed["mode"], parsed["raw"], parsed["polished"],
-                 parsed["summary"], json.dumps(parsed["advice"], ensure_ascii=False),
+                 parsed["summary"], parsed.get("understanding", ""),
+                 parsed.get("growth", ""), parsed.get("takeaway", ""),
+                 json.dumps(parsed["advice"], ensure_ascii=False),
                  json.dumps([m["text"] for m in parsed["memories"]], ensure_ascii=False),
                  parsed["profileDelta"], parsed["evi"], reply,
                  llm.PROMPT_VERSION, llm.model_for(deep)))
@@ -718,10 +720,12 @@ async def import_backup(request: Request):
                     if cur.fetchone():
                         continue
                 cur.execute(
-                    "INSERT INTO entries(date,mode,raw,polished,summary,advice,mempack,profile_delta,evidence,prompt_version,model)"
-                    " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    "INSERT INTO entries(date,mode,raw,polished,summary,understanding,growth,takeaway,advice,mempack,profile_delta,evidence,prompt_version,model)"
+                    " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     (e.get("date", ""), e.get("mode", ""), e.get("raw", ""),
                      e.get("polished", ""), e.get("summary", ""),
+                     e.get("understanding", ""), e.get("growth", ""),
+                     e.get("takeaway", ""),
                      json.dumps(e.get("advice", []), ensure_ascii=False),
                      json.dumps(e.get("memPack", e.get("mempack", [])), ensure_ascii=False),
                      e.get("profileDelta", e.get("profile_delta", "")),

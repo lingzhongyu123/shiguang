@@ -33,10 +33,16 @@ def to_markdown(data):
         L.append("")
         if e["polished"]:
             L += [e["polished"], ""]
+        if e.get("understanding"):
+            L += ["**理解与回应**", e["understanding"], ""]
+        if e.get("growth"):
+            L += ["**成长观察**", e["growth"], ""]
         if e["summary"]:
             L += ["**内容提炼**", e["summary"], ""]
         if e["advice"]:
             L += ["**观察与建议**"] + ["- " + a.replace("\n", "\n  ") for a in e["advice"]] + [""]
+        if e.get("takeaway"):
+            L += ["**一句话总结**", ">" + e["takeaway"], ""]
         if e["profileDelta"]:
             L += ["**画像变化**", e["profileDelta"], ""]
         if e["raw"]:

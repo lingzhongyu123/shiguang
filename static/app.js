@@ -294,19 +294,22 @@ function renderLog() {
         '<button' + (tab === "画像" ? ' class="active"' : "") + ' data-et="画像">画像</button></div>';
       card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + ">" + md(e.polished || "(无正文)") + "</div>";
       card += '<div class="ebody" data-eb="复盘"' + (tab === "复盘" ? "" : " hidden") + ">";
-      if (e.summary) card += '<div class="hint" style="color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
+      if (e.understanding) card += '<div class="hint" style="color:var(--fg)">理解与回应</div><div>' + md(e.understanding) + "</div>";
+      if (e.growth) card += '<div class="hint" style="margin-top:8px;color:var(--fg)">成长观察</div><div>' + md(e.growth) + "</div>";
+      if (e.summary) card += '<div class="hint" style="margin-top:8px;color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
       if (e.advice && e.advice.length) {
         card += '<div class="hint" style="margin-top:8px">观察与建议:</div><ul class="plain">';
         e.advice.forEach(function (a, i) {
-          // 观察/建议/思考分行展示;旧数据是分号分隔的,展示时同样拆行
+          // 观察/建议/思考/目的分行展示;旧数据是分号分隔的,展示时同样拆行
           if (a.indexOf("\n") < 0 && /观察:[^;]+;/.test(a)) a = a.replace(/;/g, "\n");
           var html = esc(a).replace(/\n/g, "<br>")
-            .replace(/(^|<br>)(观察|建议|思考):/g, '$1<b>$2:</b>');
+            .replace(/(^|<br>)(观察|建议|思考|目的):/g, '$1<b>$2:</b>');
           card += '<li><div class="tx">' + html + '</div><button class="btn small ghost" data-todo="' + e.id + ":" + i + '">转为待办</button></li>';
         });
         card += "</ul>";
       }
-      if (!e.summary && !(e.advice && e.advice.length)) card += '<span class="hint">(本次无复盘内容)</span>';
+      if (e.takeaway) card += '<div class="takeaway">“' + esc(e.takeaway) + "”</div>";
+      if (!e.understanding && !e.growth && !e.summary && !e.takeaway && !(e.advice && e.advice.length)) card += '<span class="hint">(本次无复盘内容)</span>';
       card += "</div>";
       card += '<div class="ebody" data-eb="记忆"' + (tab === "记忆" ? "" : " hidden") + ">";
       if (e.mempack && e.mempack.length) {
