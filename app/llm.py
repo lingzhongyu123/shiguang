@@ -171,30 +171,38 @@ def call_glm(user_prompt, deep=False):
         body["thinking"] = {"level": "low"}  # 日常模式压推理开销,避免正文被截空
     body["response_format"] = {"type": "json_object"}  # 强制合法 JSON,防止 flash 吐坏格式
     headers = {"Authorization": "Bearer " + config.ZHIPU_API_KEY}
+    # 日常模式快速失败(4 分钟):晚高峰 GLM 可能长 hang,别让用户干等 10 分钟;
+    # 深度模式本身就要长思考,给 10 分钟
+    timeout = 600 if deep else 240
     last_err = None
-    for _ in range(2):  # 一次重试
+    for _ in range(2):  # 参数不兼容时的一次重试
         try:
-            r = httpx.post(API_URL, json=body, headers=headers, timeout=300)
-            if r.status_code >= 400:
-                try:
-                    detail = r.json().get("error", {}).get("message", "")
-                except Exception:
-                    detail = ""
-                last_err = LLMError("GLM 服务错误 %d %s" % (r.status_code, detail))
-                if "thinking" in detail and "thinking" in body:
-                    body.pop("thinking")  # 该模型不支持思考等级,去掉后重试
-                    continue
-                if "response_format" in detail and "response_format" in body:
-                    body.pop("response_format")  # 该模型不支持 JSON 模式,去掉后重试
-                    continue
-                raise last_err
+            r = httpx.post(API_URL, json=body, headers=headers,
+                           timeout=httpx.Timeout(timeout, connect=10.0))
+        except httpx.HTTPError as e:
+            # 超时/网络错误不重试:重试只会把等待时间翻倍
+            raise LLMError("GLM 调用失败:" + str(e) + "(智谱接口响应慢,请稍后重新提交,原文已保留)")
+        if r.status_code >= 400:
+            try:
+                detail = r.json().get("error", {}).get("message", "")
+            except Exception:
+                detail = ""
+            last_err = LLMError("GLM 服务错误 %d %s" % (r.status_code, detail))
+            if "thinking" in detail and "thinking" in body:
+                body.pop("thinking")  # 该模型不支持思考等级,去掉后重试
+                continue
+            if "response_format" in detail and "response_format" in body:
+                body.pop("response_format")  # 该模型不支持 JSON 模式,去掉后重试
+                continue
+            raise last_err
+        try:
             data = r.json()
             content = data["choices"][0]["message"].get("content") or ""
-            if content.strip():
-                return content
-            last_err = LLMError("GLM 返回了空正文(推理耗尽输出额度)")
-        except (httpx.HTTPError, KeyError, IndexError) as e:
-            last_err = LLMError("GLM 调用失败:" + str(e))
+        except (KeyError, IndexError, ValueError):
+            break
+        if content.strip():
+            return content
+        last_err = LLMError("GLM 返回了空正文(推理耗尽输出额度)")
     raise last_err or LLMError("GLM 调用失败")
 
 
