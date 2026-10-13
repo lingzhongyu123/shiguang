@@ -229,6 +229,7 @@ $("btnProcess").onclick = function () {
 var _openDates = null;   // 展开的日期集合;null 表示首次渲染只展开最新一天
 var _openEntries = {};   // 展开的日志 id → true
 var _jumpToNew = false;  // 刚归档的新日志:自动展开其日期和正文
+var _activeTab = {};     // 日志 id → 当前页签(整理/复盘/记忆/画像),重渲染不弹回
 
 function fmtDate(d) {
   var m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(d || "");
@@ -267,7 +268,7 @@ function renderLog() {
     _jumpToNew = false;
   }
   var h = groups.map(function (k) {
-    var open = _openDates === true || _openDates[k];
+    var open = !!_openDates[k];
     var hs = '<div class="card dgroup' + (open ? " open" : "") + '" data-date="' + esc(k) + '">' +
       '<div class="dhead" data-date="' + esc(k) + '"><span class="darrow">' + (open ? "▾" : "▸") +
       '</span><b>' + esc(/^未注明/.test(k) ? k : fmtDate(k)) + '</b>' +
@@ -280,18 +281,20 @@ function renderLog() {
         (e.mode ? ' <span class="chip">' + esc(e.mode) + "</span>" : "") +
         '<span class="darrow">' + (eo ? "▾" : "▸") + "</span></div>" +
         '<div class="efull"' + (eo ? "" : " hidden") + ">";
+      var tab = _activeTab[e.id] || "整理";
       card += '<div class="etabs">' +
-        '<button class="active" data-et="整理">整理</button>' +
-        '<button data-et="复盘">复盘</button>' +
-        '<button data-et="记忆">记忆</button>' +
-        '<button data-et="画像">画像</button></div>';
-      card += '<div class="ebody" data-eb="整理">' + md(e.polished || "(无正文)") + "</div>";
-      card += '<div class="ebody" data-eb="复盘" hidden>';
+        '<button' + (tab === "整理" ? ' class="active"' : "") + ' data-et="整理">整理</button>' +
+        '<button' + (tab === "复盘" ? ' class="active"' : "") + ' data-et="复盘">复盘</button>' +
+        '<button' + (tab === "记忆" ? ' class="active"' : "") + ' data-et="记忆">记忆</button>' +
+        '<button' + (tab === "画像" ? ' class="active"' : "") + ' data-et="画像">画像</button></div>';
+      card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + ">" + md(e.polished || "(无正文)") + "</div>";
+      card += '<div class="ebody" data-eb="复盘"' + (tab === "复盘" ? "" : " hidden") + ">";
       if (e.summary) card += '<div class="hint" style="color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
       if (e.advice && e.advice.length) {
         card += '<div class="hint" style="margin-top:8px">观察与建议:</div><ul class="plain">';
         e.advice.forEach(function (a, i) {
-          // 观察/建议/思考分行展示(以行首关键词标色),旧数据的分号格式原样显示
+          // 观察/建议/思考分行展示;旧数据是分号分隔的,展示时同样拆行
+          if (a.indexOf("\n") < 0 && /观察:[^;]+;/.test(a)) a = a.replace(/;/g, "\n");
           var html = esc(a).replace(/\n/g, "<br>")
             .replace(/(^|<br>)(观察|建议|思考):/g, '$1<b>$2:</b>');
           card += '<li><div class="tx">' + html + '</div><button class="btn small ghost" data-todo="' + e.id + ":" + i + '">转为待办</button></li>';
@@ -300,14 +303,14 @@ function renderLog() {
       }
       if (!e.summary && !(e.advice && e.advice.length)) card += '<span class="hint">(本次无复盘内容)</span>';
       card += "</div>";
-      card += '<div class="ebody" data-eb="记忆" hidden>';
+      card += '<div class="ebody" data-eb="记忆"' + (tab === "记忆" ? "" : " hidden") + ">";
       if (e.mempack && e.mempack.length) {
         card += '<ul class="plain">';
         e.mempack.forEach(function (m) { card += "<li>" + esc(typeof m === "string" ? m : m.text) + "</li>"; });
         card += "</ul>";
       } else card += '<span class="hint">(本次无记忆更新)</span>';
       card += "</div>";
-      card += '<div class="ebody" data-eb="画像" hidden>';
+      card += '<div class="ebody" data-eb="画像"' + (tab === "画像" ? "" : " hidden") + ">";
       if (e.profileDelta) card += esc(e.profileDelta) + (e.evi ? '<div><span class="chip acc">证据 ' + esc(e.evi) + "</span></div>" : "");
       else card += '<span class="hint">(本次画像不变)</span>';
       card += "</div>";
@@ -332,6 +335,8 @@ function renderLog() {
       var k = b.dataset.date;
       if (_openDates[k]) delete _openDates[k]; else _openDates[k] = true;
       renderLog();
+      var el = box.querySelector('.dhead[data-date="' + k + '"]');
+      if (el) el.scrollIntoView({ block: "start" });  // 展开后把该日期滚回视野
     };
   });
   box.querySelectorAll(".ehead").forEach(function (b) {
@@ -339,12 +344,15 @@ function renderLog() {
       var id = +b.closest(".ecard").dataset.eid;
       if (_openEntries[id]) delete _openEntries[id]; else _openEntries[id] = true;
       renderLog();
+      var el = box.querySelector('.ecard[data-eid="' + id + '"]');
+      if (el) el.scrollIntoView({ block: "nearest" });
     };
   });
   box.querySelectorAll(".etabs button").forEach(function (b) {
     b.onclick = function (e) {
       e.stopPropagation();
       var card = b.closest(".ecard");
+      _activeTab[+card.dataset.eid] = b.dataset.et;  // 记住页签,重渲染不弹回
       card.querySelectorAll(".etabs button").forEach(function (x) { x.classList.remove("active"); });
       b.classList.add("active");
       card.querySelectorAll(".ebody").forEach(function (x) { x.hidden = x.dataset.eb !== b.dataset.et; });
