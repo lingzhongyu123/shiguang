@@ -91,6 +91,11 @@ function switchPane(name) {
     $("pane-" + id).hidden = id !== name;
   });
   window.scrollTo(0, 0);
+  // 重触发切入动画(切 tab 时轻滑入,不是硬切)
+  var p = $("pane-" + name);
+  p.style.animation = "none";
+  void p.offsetWidth;  // 强制回流以重启动画
+  p.style.animation = "";
 }
 document.querySelectorAll("nav.tabs button").forEach(function (b) {
   b.onclick = function () { switchPane(b.dataset.pane); };

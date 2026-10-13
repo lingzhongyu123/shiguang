@@ -215,3 +215,44 @@ ul.plain li:last-child { border-bottom: none; }
 .ehead { display: flex; align-items: center; gap: 6px; padding: 10px 12px; cursor: pointer; user-select: none; font-size: 14px; }
 .ehead .darrow { margin-left: auto; }
 .efull { border-top: 1px solid var(--line); padding: 10px 12px 12px; }
+
+/* ---- 流畅度优化 ---- */
+/* 点按即时反馈:所有可点元素轻微缩放 + 高亮透明化 */
+button, .dhead, .ehead, [data-et], .chip { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+button:not(:disabled) { transition: transform .12s ease, opacity .12s ease, background .15s ease; }
+button:not(:disabled):active { transform: scale(.96); opacity: .85; }
+.dhead:active, .ehead:active { background: var(--accent-soft); }
+.dhead, .ehead { transition: background .15s ease; }
+
+/* 展开/收起与列表渲染:新出现的块淡入下移,抵消 innerHTML 重绘的生硬感 */
+.dbody, .efull { animation: fadeInUp .22s ease both; }
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.card { animation: fadeIn .25s ease both; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* 箭头旋转过渡(展开态) */
+.dhead .darrow, .ehead .darrow { transition: transform .18s ease; display: inline-block; }
+.dgroup.open > .dhead .darrow, .ecard:not(.collapsed) > .ehead .darrow { transform: rotate(90deg); }
+
+/* 平滑滚动与页面切换 */
+html { scroll-behavior: smooth; }
+.pane { animation: paneIn .2s ease both; }
+@keyframes paneIn { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: none; } }
+
+/* 折叠条目之间的间距节奏 */
+.ecard + .ecard { margin-top: 8px; }
+.ehead { border-radius: 10px; }
+.ecard.collapsed .ehead:hover { background: var(--accent-soft); }
+
+/* 输入区聚焦反馈 */
+textarea, input, select { transition: border-color .15s ease, box-shadow .15s ease; }
+textarea:focus, input:focus, select:focus { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* 减少动画偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .dbody, .efull, .card, .pane { animation: none; }
+  html { scroll-behavior: auto; }
+}
