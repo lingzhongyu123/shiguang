@@ -280,6 +280,11 @@ function renderLog() {
         (e.mode ? ' <span class="chip">' + esc(e.mode) + "</span>" : "") +
         '<span class="darrow">' + (eo ? "▾" : "▸") + "</span></div>" +
         '<div class="efull"' + (eo ? "" : " hidden") + ">";
+      card += '<div class="etabs">' +
+        '<button class="active" data-et="整理">整理</button>' +
+        '<button data-et="复盘">复盘</button>' +
+        '<button data-et="记忆">记忆</button>' +
+        '<button data-et="画像">画像</button></div>';
       card += '<div class="ebody" data-eb="整理">' + md(e.polished || "(无正文)") + "</div>";
       card += '<div class="ebody" data-eb="复盘" hidden>';
       if (e.summary) card += '<div class="hint" style="color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
