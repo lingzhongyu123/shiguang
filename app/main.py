@@ -215,7 +215,7 @@ def _process(jid, body):
                 query_vec = llm.embed_texts([body.raw[:1500]])[0]
             except llm.LLMError:
                 query_vec = None
-        related = search_related(conn, query_vec, top_k=5)
+        related = search_related(conn, query_vec, top_k=8)  # 跨时间关联是核心能力,多召回几条
 
     prompt = llm.build_user_prompt(sections, goals, recent, related,
                                    body.raw.strip(), date, body.mode)
