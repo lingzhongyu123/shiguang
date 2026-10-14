@@ -211,6 +211,13 @@ ul.plain li:last-child { border-bottom: none; }
   vertical-align: -2px; margin-right: 6px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.spin2 {
+  display: inline-block; width: 18px; height: 18px; flex: none;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .spin2 { animation: none; } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 
 /* ---- 日志页:按日期分组 ---- */

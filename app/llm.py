@@ -229,7 +229,7 @@ def embed_texts(texts):
     try:
         r = httpx.post(EMBED_URL, json={"model": config.EMBED_MODEL, "input": texts,
                                         "dimensions": config.EMBED_DIM},
-                       headers=headers, timeout=60)
+                       headers=headers, timeout=30)
         r.raise_for_status()
         data = sorted(r.json()["data"], key=lambda d: d["index"])
         return [d["embedding"] for d in data]

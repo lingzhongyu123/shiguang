@@ -149,6 +149,8 @@ function pollJob(jid, btn) {
     // job 为 null = 没拿到终态(网络断/登录过期/墙钟超时):保留 sg_job 供刷新后续接,
     // 原文还在服务端 jobs 表里,不能因为前端断连就当任务没了
     var known = !!job;
+    _pendingNew = null;  // 骨架卡片撤下(完成→_jumpToNew 填充;失败→toast 提示)
+    renderLog();
     if (known) {
       try {
         var j = JSON.parse(localStorage.getItem("sg_job") || "null");
@@ -165,7 +167,7 @@ function pollJob(jid, btn) {
     } else if (job && job.status === "done") {
       _jumpToNew = true;  // 新日志在日志页自动展开定位
       refreshAll();
-      if (btn) switchPane("log");
+      switchPane("log");
       toast("已归档");
     } else {
       var raw = job ? job.raw : "";
@@ -194,7 +196,10 @@ function pollJob(jid, btn) {
       if (job.status === "queued" || job.status === "running") {
         errs = 0;
         var stages = { embedding: "正在检索相关记忆…", generating: "GLM 正在整理与提炼…", saving: "正在归档…" };
-        $("procHint").textContent = (btn ? "" : "后台任务:") + (stages[job.stage] || "排队/处理中…");
+        var sec = Math.round((Date.now() - t0) / 1000);
+        $("procHint").textContent = (btn ? "" : "后台任务:") + (stages[job.stage] || "排队/处理中…") + "(" + sec + "s)";
+        var sk = $("pendStage");
+        if (sk && _pendingNew && _pendingNew.t0 === t0) sk.textContent = (stages[job.stage] || "排队/处理中…") + "(" + sec + "s)";
         return;
       }
       finish(job, job.error);
@@ -203,8 +208,19 @@ function pollJob(jid, btn) {
       // 404(任务不存在,如数据库重置后恢复备份)是确定终态,不能当"未知状态"保留续接
       finish(e.message.indexOf("不存在") >= 0 ? { status: "missing" } : null, e.message);
     });
-  }, 3000);
+  }, 1500);
   _poller = p;
+}
+
+/* 草稿自动保存:刷新/闪退不丢已输入的口述 */
+$("inRaw").addEventListener("input", function () {
+  try { localStorage.setItem("sg_draft", $("inRaw").value); } catch (e) {}
+});
+function restoreDraft() {
+  try {
+    var d = localStorage.getItem("sg_draft");
+    if (d && !$("inRaw").value.trim()) $("inRaw").value = d;
+  } catch (e) {}
 }
 
 $("btnProcess").onclick = function () {
@@ -221,6 +237,10 @@ $("btnProcess").onclick = function () {
   $("procHint").textContent = "GLM 正在后台整理,可以去别的页看,好了会提示(约 10–60 秒)。";
   api("POST", "/api/process", { raw: raw, mode: mode }).then(function (r) {
     $("inRaw").value = "";
+    try { localStorage.removeItem("sg_draft"); } catch (e) {}
+    _pendingNew = { t0: Date.now() };  // 日志页置顶骨架卡片,边等边看得到进度
+    renderLog();
+    switchPane("log");
     pollJob(r.jobId, btn);
   }).catch(function (e) {
     btn.disabled = false;
@@ -235,6 +255,12 @@ var _openDates = null;   // 展开的日期集合;null 表示首次渲染只展�
 var _openEntries = {};   // 展开的日志 id → true
 var _jumpToNew = false;  // 刚归档的新日志:自动展开其日期和正文
 var _activeTab = {};     // 日志 id → 当前页签(整理/复盘/记忆/画像),重渲染不弹回
+var _pendingNew = null;  // 提交后正在处理的新日志:置顶骨架卡片,完成即填充
+
+function todayKey() {
+  var d = new Date();
+  return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+}
 
 function fmtDate(d) {
   var m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(d || "");
@@ -336,6 +362,12 @@ function renderLog() {
     }).join("");
     return hs + "</div></div>";  // 关 dbody + dgroup
   }).join("");
+  if (_pendingNew) {
+    // 置顶骨架卡片:提交后立刻可见"正在整理",完成由 _jumpToNew 填充真卡片
+    h = '<div class="card" style="padding:12px 14px;display:flex;align-items:center;gap:10px">' +
+        '<span class="spin2"></span><div><b>正在整理刚才提交的日志</b>' +
+        '<div class="hint" id="pendStage">排队/处理中…</div></div></div>' + h;
+  }
   box.innerHTML = h;
 
   box.querySelectorAll(".dhead").forEach(function (b) {
@@ -656,7 +688,7 @@ fetch("/api/profile").then(function (r) {
         pollJob(j.id, null);
       } else if (j) localStorage.removeItem("sg_job");
     } catch (e) {}
-    // 找回上次处理失败时暂存的原文(输入框为空才填,避免覆盖新内容)
+    // 找回上次处理失败时暂存的原文(输入框为空才填,避免覆盖新内容);失败暂存优先于普通草稿
     try {
       var fr = localStorage.getItem("sg_failed_raw");
       if (fr && !$("inRaw").value.trim()) {
@@ -665,5 +697,6 @@ fetch("/api/profile").then(function (r) {
       }
       localStorage.removeItem("sg_failed_raw");
     } catch (e) {}
+    restoreDraft();
   }
 });
