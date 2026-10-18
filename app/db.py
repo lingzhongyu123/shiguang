@@ -104,6 +104,10 @@ CREATE INDEX IF NOT EXISTS embeddings_idx ON embeddings USING hnsw (embedding ve
 
 # 已有库的结构迁移(幂等)
 MIGRATIONS = [
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS date TEXT DEFAULT ''",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS processing_warning TEXT DEFAULT ''",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS derived_stale BOOLEAN DEFAULT FALSE",
     "ALTER TABLE archive ADD COLUMN IF NOT EXISTS source_entries INTEGER[] DEFAULT '{}'",
     "ALTER TABLE archive ADD COLUMN IF NOT EXISTS confidence REAL",
     "ALTER TABLE archive ADD COLUMN IF NOT EXISTS last_verified TEXT DEFAULT ''",
@@ -193,6 +197,8 @@ def entry_to_dict(row):
         "profileDelta": row["profile_delta"], "evi": row["evidence"],
         "promptVersion": row.get("prompt_version", ""), "model": row.get("model", ""),
         "createdAt": row["created_at"],
+        "warning": row.get("processing_warning") or "",
+        "derivedStale": bool(row.get("derived_stale")),
     }
 
 
@@ -201,6 +207,7 @@ def pending_to_dict(row):
         row = dict(row)
     return {"id": row["id"], "text": row["text"], "cat": row["cat"],
             "src": row["src_entry"], "evi": row["evi"],
+            "status": row.get("status", "pending"),
             "confidence": row.get("confidence"), "note": row.get("note", "")}
 
 

@@ -14,7 +14,10 @@ def to_markdown(data):
         L += (["- " + x for x in items] if items else ["(暂无)"])
         L.append("")
     L += ["## 待审核记忆", ""]
-    L += (["- [%s] %s" % (p["cat"], p["text"]) for p in data["pending"]] or ["(无)"])
+    L += (["- [%s] %s" % (p["cat"], p["text"]) for p in data["pending"] if p.get('status', 'pending') == 'pending'] or ["(无)"])
+    L += ["", "## 未完成记录原文", ""]
+    for job in data.get('unfinishedJobs', []):
+        L += ['### ' + (job.get('date') or job.get('created_at', '')[:10]), job.get('raw') or '(仅执行快捷指令)', '']
     L += ["", "## 行动事项", ""]
     L += (["- [%s] %s%s" % ("x" if t["done"] else " ", t["text"],
                             "(截止 " + t["due"] + ")" if t["due"] else "")
@@ -52,6 +55,7 @@ def to_markdown(data):
 
 def to_json(data):
     return json.dumps({
+        "formatVersion": 2,
         "exportedAt": data["now"],
         "profile": data["profile"],
         "pending": data["pending"],
@@ -59,4 +63,5 @@ def to_json(data):
         "goals": data.get("goals", []),
         "events": data.get("events", []),
         "entries": data["rows"],
+        "unfinishedJobs": data.get("unfinishedJobs", []),
     }, ensure_ascii=False, indent=2)

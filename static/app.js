@@ -2,6 +2,9 @@
 var SECTIONS = ["长期背景", "当前目标", "长期偏好", "进行中的项目", "经多次观察得到的模式", "近期变化"];
 
 var state = { entries: [], pending: [], todos: [], goals: [], events: [], profile: { sections: {}, updated: "" } };
+var DEFAULT_HINT = "通常约 30–60 秒。原文保存后可以离开，稍后回来查看。";
+var _profileDirty = false;
+var _editingEntry = null;
 
 /* ---- 基础 ---- */
 function $(id) { return document.getElementById(id); }
@@ -60,6 +63,7 @@ $("btnLogin").onclick = function () {
   api("POST", "/api/login", { password: $("pwd").value }).then(function () {
     showApp();
     refreshAll();
+    recoverSession();
   }).catch(function (e) {
     var err = $("loginErr");
     err.textContent = e.message === "未登录" ? "密码不对" : e.message;
@@ -75,6 +79,7 @@ $("btnLogout").onclick = function () {
 
 /* ---- 刷新 ---- */
 function refreshAll() {
+  refreshJobs();
   api("GET", "/api/entries").then(function (es) { state.entries = es; renderLog(); }).catch(function () {});
   api("GET", "/api/pending").then(function (ps) { state.pending = ps; renderPending(); }).catch(function () {});
   api("GET", "/api/todos").then(function (ts) { state.todos = ts; renderTodos(); }).catch(function () {});
@@ -161,11 +166,12 @@ function pollJob(jid, btn) {
       btn.disabled = false;
       btn.textContent = "提交并处理";
     }
-    $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
+    $("procHint").textContent = DEFAULT_HINT;
+    refreshJobs();
     if (job && job.status === "missing") {
       toast("任务记录已不存在(可能恢复过备份),无法续接");
     } else if (job && job.status === "done") {
-      _jumpToNew = true;  // 新日志在日志页自动展开定位
+      _jumpToNew = job.entryId || true;
       refreshAll();
       switchPane("log");
       toast("已归档");
@@ -176,6 +182,7 @@ function pollJob(jid, btn) {
       } else if (raw) {
         if (!$("inRaw").value.trim()) {
           $("inRaw").value = raw;  // 处理失败时把口述原文找回来,不丢内容
+          saveDraft();
           toast("处理失败,原文已恢复到输入框:" + (errMsg || "未知错误"));
         } else {
           // 输入框已有新内容,原文暂存,下次清空输入框打开页面时找回
@@ -188,45 +195,57 @@ function pollJob(jid, btn) {
     }
   }
   p.ival = setInterval(function () {
+    if (p.busy || _poller !== p) return;
     if (Date.now() - t0 > 16 * 60 * 1000) {  // 墙钟兜底
       finish(null, "任务超时(服务可能重启过),请重新提交");
       return;
     }
+    p.busy = true;
     api("GET", "/api/jobs/" + jid).then(function (job) {
+      if (_poller !== p) return;
       if (job.status === "queued" || job.status === "running") {
         errs = 0;
         var stages = { embedding: "正在检索相关记忆…", generating: "GLM 正在整理与提炼…", saving: "正在归档…" };
         var sec = Math.round((Date.now() - t0) / 1000);
         $("procHint").textContent = (btn ? "" : "后台任务:") + (stages[job.stage] || "排队/处理中…") + "(" + sec + "s)";
         var sk = $("pendStage");
-        if (sk && _pendingNew && _pendingNew.t0 === t0) sk.textContent = (stages[job.stage] || "排队/处理中…") + "(" + sec + "s)";
+        if (sk && _pendingNew) sk.textContent = (stages[job.stage] || "排队/处理中…") + "(" + sec + "s)";
         return;
       }
       finish(job, job.error);
     }).catch(function (e) {
+      if (_poller !== p) return;
       if (++errs < 3 && e.message !== "未登录" && e.message.indexOf("不存在") < 0) return;
       // 404(任务不存在,如数据库重置后恢复备份)是确定终态,不能当"未知状态"保留续接
       finish(e.message.indexOf("不存在") >= 0 ? { status: "missing" } : null, e.message);
-    });
+    }).finally(function () { p.busy = false; });
   }, 1500);
   _poller = p;
 }
 
 /* 草稿自动保存:刷新/闪退不丢已输入的口述 */
-$("inRaw").addEventListener("input", function () {
-  try { localStorage.setItem("sg_draft", $("inRaw").value); } catch (e) {}
-});
+function saveDraft() {
+  try {
+    localStorage.setItem("sg_draft", $("inRaw").value);
+    localStorage.setItem("sg_draft_meta", JSON.stringify({mode: $("inMode").value, date: $("inDate").value}));
+  } catch (e) { $("procHint").textContent = "浏览器无法保存草稿，请提交并确认原文已保存后再离开。"; }
+}
+$("inRaw").addEventListener("input", saveDraft);
+$("inMode").addEventListener("change", saveDraft);
+$("inDate").addEventListener("change", saveDraft);
 function restoreDraft() {
   try {
     var d = localStorage.getItem("sg_draft");
     if (d && !$("inRaw").value.trim()) $("inRaw").value = d;
+    var meta = JSON.parse(localStorage.getItem("sg_draft_meta") || "null");
+    if (meta && d) { $("inMode").value = meta.mode || ""; $("inDate").value = meta.date || todayKey(); }
   } catch (e) {}
 }
 
 $("btnProcess").onclick = function () {
-  var raw = $("inRaw").value.trim();
+  var raw = $("inRaw").value; // Preserve the exact original, including whitespace.
   var mode = $("inMode").value;
-  if (!raw && !mode) { toast("先输入口述日志,或选择一个模式"); return; }
+  if (!raw.trim() && ["/周总结", "/月总结", "/查看画像"].indexOf(mode) < 0) { toast("这个模式需要口述内容"); return; }
   if (!raw && !state.entries.length &&
       (mode === "/周总结" || mode === "/月总结" || mode === "/查看画像")) {
     toast("还没有归档日志,先记录几条再总结"); return;
@@ -235,17 +254,28 @@ $("btnProcess").onclick = function () {
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span>正在整理…';
   $("procHint").textContent = "GLM 正在后台整理,可以去别的页看,好了会提示(约 10–60 秒)。";
-  api("POST", "/api/process", { raw: raw, mode: mode }).then(function (r) {
-    $("inRaw").value = "";
-    try { localStorage.removeItem("sg_draft"); } catch (e) {}
+  var payload = {raw: raw, mode: mode, date: $("inDate").value || todayKey()};
+  try {
+    var previous = JSON.parse(localStorage.getItem("sg_submission") || "null");
+    payload.request_id = previous && previous.raw === raw && previous.mode === mode && previous.date === payload.date ? previous.request_id : newSubmissionId();
+    if (previous && previous.raw && previous.raw !== raw) stashFailedRaw(previous.raw);
+    localStorage.setItem("sg_submission", JSON.stringify(payload));
+  } catch (e) { payload.request_id = newSubmissionId(); }
+  saveDraft();
+  api("POST", "/api/process", payload).then(function (r) {
+    // User may have dictated another draft while the initial request was in flight.
+    if ($("inRaw").value === raw) { $("inRaw").value = ""; saveDraft(); }
+    try { localStorage.removeItem("sg_submission"); } catch (e) {}
     _pendingNew = { t0: Date.now() };  // 日志页置顶骨架卡片,边等边看得到进度
     renderLog();
     switchPane("log");
     pollJob(r.jobId, btn);
+    toast("原文已保存，可以稍后回来查看");
+    refreshJobs();
   }).catch(function (e) {
     btn.disabled = false;
     btn.textContent = "提交并处理";
-    $("procHint").textContent = "提交后由服务端的 GLM 自动整理,约需十几秒。";
+    $("procHint").textContent = "尚未确认接收，原文仍在输入框。重试同一内容不会重复归档。";
     toast(e.message);
   });
 };
@@ -278,8 +308,9 @@ function entryTitle(e) {  // 折叠态的单行预览
 }
 
 function renderLog() {
+  if (_editingEntry !== null) return;
   var box = $("logList");
-  if (!state.entries.length) {
+  if (!state.entries.length && !_pendingNew) {
     box.innerHTML = '<div class="card empty">还没有归档的日志。<br>回「记录」页,说第一段吧。</div>';
     return;
   }
@@ -291,9 +322,10 @@ function renderLog() {
     if (!byDate[k]) { byDate[k] = []; groups.push(k); }
     byDate[k].push(e);
   });
+  groups.sort().reverse();
   if (_openDates === null) _openDates = {};
   if (_jumpToNew && state.entries.length) {
-    var ne = state.entries[0];  // entries 按 id 倒序,最新在前
+    var ne = state.entries.filter(function (e) { return e.id === _jumpToNew; })[0] || state.entries[0];
     _openDates[(ne.date || "").slice(0, 10) || "未注明日期"] = true;
     _openEntries[ne.id] = true;
     _jumpToNew = false;
@@ -313,12 +345,15 @@ function renderLog() {
         '<span class="darrow">' + (eo ? "▾" : "▸") + "</span></div>" +
         '<div class="efull"' + (eo ? "" : " hidden") + ">";
       var tab = _activeTab[e.id] || "整理";
+      if (e.warning) card += '<div class="review-notice">' + esc(e.warning) + '</div>';
+      if (e.derivedStale) card += '<div class="review-notice">正文已修改。旧复盘、记忆和事件尚未重新核对，请勿直接沿用其中的事实。</div>';
       card += '<div class="etabs">' +
         '<button' + (tab === "整理" ? ' class="active"' : "") + ' data-et="整理">整理</button>' +
         '<button' + (tab === "复盘" ? ' class="active"' : "") + ' data-et="复盘">复盘</button>' +
         '<button' + (tab === "记忆" ? ' class="active"' : "") + ' data-et="记忆">记忆</button>' +
         '<button' + (tab === "画像" ? ' class="active"' : "") + ' data-et="画像">画像</button></div>';
-      card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + ">" + md(e.polished || "(无正文)") + "</div>";
+      card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + ">" + md(e.polished || "(无正文)") +
+        '<div class="row" style="margin-top:8px"><button class="btn small ghost" data-edit="' + e.id + '">编辑正文</button></div></div>';
       card += '<div class="ebody" data-eb="复盘"' + (tab === "复盘" ? "" : " hidden") + ">";
       if (e.understanding) card += '<div class="hint" style="color:var(--fg)">理解与回应</div><div>' + md(e.understanding) + "</div>";
       if (e.growth) card += '<div class="hint" style="margin-top:8px;color:var(--fg)">成长观察</div><div>' + md(e.growth) + "</div>";
@@ -413,6 +448,29 @@ function renderLog() {
       }).catch(function (err) { toast(err.message); });
     };
   });
+  box.querySelectorAll("[data-edit]").forEach(function (b) {
+    b.onclick = function () {
+      var card = b.closest(".ecard");
+      var e = state.entries.filter(function (x) { return String(x.id) === card.dataset.eid; })[0];
+      if (!e) return;
+      _editingEntry = e.id;
+      var body = card.querySelector('.ebody[data-eb="整理"]');
+      body.innerHTML = '<textarea rows="12">' + esc(e.polished || "") + "</textarea>" +
+        '<div class="row" style="margin-top:6px"><button class="btn small" data-esave="' + e.id + '">保存</button>' +
+        '<button class="btn small ghost" data-ecancel>取消</button>' +
+        '<span class="hint" style="margin:0">只改整理稿;原始口述保留在下方。</span></div>';
+      body.querySelector("[data-ecancel]").onclick = function () { _editingEntry = null; renderLog(); };
+      body.querySelector("[data-esave]").onclick = function () {
+        var val = body.querySelector("textarea").value.trim();
+        if (!val) { toast("正文不能为空"); return; }
+        api("PATCH", "/api/entries/" + e.id, { polished: val }).then(function () {
+          _editingEntry = null;
+          refreshAll();
+          toast("正文已更新");
+        }).catch(function (err) { toast(err.message); });
+      };
+    };
+  });
   box.querySelectorAll("[data-del]").forEach(function (b) {
     b.onclick = function () {
       if (!confirm("删除这条日志?已确认的记忆和待办会保留。")) return;
@@ -444,7 +502,8 @@ function renderPending() {
     return;
   }
   box.innerHTML = state.pending.map(function (p) {
-    var h = '<div class="card pend" style="margin-bottom:10px;padding:12px 14px"><div>' + esc(p.text) + "</div>";
+    var h = '<div class="card pend" style="margin-bottom:10px;padding:12px 14px"><label class="fld">核对记忆（可修改）<textarea data-memory-text="' + p.id + '" rows="3">' + esc(p.text) + '</textarea></label>';
+    if (p.src) h += '<button class="btn small ghost source-link" data-source="' + p.src + '">查看来源日志</button>';
     if (p.evi) h += '<span class="chip">来源证据:' + esc(p.evi) + "</span>";
     if (p.confidence !== null && p.confidence !== undefined) h += '<span class="chip">AI 置信度 ' + Math.round(p.confidence * 100) + "%</span>";
     if (p.note) h += '<span class="chip">' + esc(p.note) + "</span>";
@@ -462,7 +521,9 @@ function renderPending() {
       var p = state.pending.filter(function (x) { return String(x.id) === b.dataset.ok; })[0];
       var sel = box.querySelector('select[data-pid="' + b.dataset.ok + '"]');
       var cat = sel ? sel.value : (p ? p.cat : "长期背景");
-      api("POST", "/api/pending/" + b.dataset.ok + "/confirm", { cat: cat }).then(function () {
+      var text = box.querySelector('[data-memory-text="' + b.dataset.ok + '"]').value.trim();
+      if (!text) { toast("记忆内容不能为空"); return; }
+      api("POST", "/api/pending/" + b.dataset.ok + "/confirm", { cat: cat, text: text }).then(function () {
         refreshAll();
         toast("已并入「" + cat + "」");
       }).catch(function (err) { toast(err.message); });
@@ -476,6 +537,7 @@ function renderPending() {
       }).catch(function (err) { toast(err.message); });
     };
   });
+  bindSourceLinks(box);
 }
 
 /* ---- 待办 ---- */
@@ -617,7 +679,7 @@ function renderProfile() {
           if (ev.length) {
             h += '<details style="margin:-4px 0 6px"><summary class="hint">来源 ' + ev.length + " 篇日志</summary><ul class=\"plain\">";
             ev.forEach(function (e2) {
-              h += '<li><span class="hint">' + esc(e2.date || "") + "</span> " + esc(e2.title) + "</li>";
+              h += '<li><button class="btn small ghost source-link" data-source="' + e2.id + '">' + esc(e2.date || "") + " " + esc(e2.title) + "</button></li>";
             });
             h += "</ul></details>";
           }
@@ -628,6 +690,7 @@ function renderProfile() {
   });
   if (!any) h += '<p class="hint">在「记忆」页确认待审核记忆后,档案会逐渐丰满起来。</p>';
   view.innerHTML = h;
+  bindSourceLinks(view);
   view.querySelectorAll("[data-adep]").forEach(function (b) {
     b.onclick = function () {
       if (!confirm("停用这条记忆?它会从 AI 的档案里移除,但保留在历史中(可恢复)。")) return;
@@ -643,16 +706,18 @@ function renderProfile() {
         .catch(function (err) { toast(err.message); });
     };
   });
-  $("profileEdit").value = SECTIONS.map(function (s) {
+  if (!_profileDirty) $("profileEdit").value = SECTIONS.map(function (s) {
     return "## " + s + "\n" + ((secs[s] || []).join("\n") || "(暂无)");
   }).join("\n\n");
 }
 $("btnProfileSave").onclick = function () {
   api("PUT", "/api/profile", { text: $("profileEdit").value }).then(function () {
+    _profileDirty = false;
     refreshAll();
     toast("档案已保存");
   }).catch(function (err) { toast(err.message); });
 };
+$("profileEdit").addEventListener("input", function () { _profileDirty = true; });
 
 /* ---- 导入 ---- */
 $("btnImport").onclick = function () { $("fileImport").click(); };
@@ -674,29 +739,95 @@ $("fileImport").onchange = function (e) {
 };
 
 /* ---- 启动 ---- */
+function newSubmissionId() {
+  var bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(function (n) { return ('0' + n.toString(16)).slice(-2); }).join('');
+}
+
+function bindSourceLinks(box) {
+  box.querySelectorAll('[data-source]').forEach(function (b) {
+    b.onclick = function () {
+      if (_editingEntry !== null) { toast('请先保存或取消正在编辑的正文'); return; }
+      api('GET', '/api/entries/' + b.dataset.source).then(function (entry) {
+        if (!state.entries.some(function (e) { return e.id === entry.id; })) state.entries.push(entry);
+        _openDates = _openDates || {};
+        _openDates[entry.date.slice(0, 10)] = true;
+        _openEntries[entry.id] = true;
+        _activeTab[entry.id] = '整理';
+        renderLog(); switchPane('log');
+        var el = document.querySelector('.ecard[data-eid="' + entry.id + '"]');
+        if (el) el.scrollIntoView({block: 'start'});
+      }).catch(function (e) { toast(e.message); });
+    };
+  });
+}
+
+function refreshJobs() {
+  api('GET', '/api/jobs').then(function (jobs) {
+    var box = $('unfinishedBox');
+    box.hidden = !jobs.length;
+    var labels = {queued: '等待处理', running: '处理中', failed: '需要重新处理'};
+    box.innerHTML = '<h2>未完成记录</h2><p class="hint">以下原文已保存在服务器，换设备也能找回。</p>' + jobs.map(function (j) {
+      return '<details><summary>' + esc(j.date || j.created_at.slice(0,10)) + ' · ' + esc(labels[j.status]) + '</summary>' +
+        '<div class="hint">' + esc(j.mode || '日常记录') + '</div><div class="recovery-raw">' + esc(j.raw || '（仅执行快捷指令）') + '</div>' +
+        '<p class="hint">' + esc(j.error || '') + '</p><div class="row">' +
+        (j.raw ? '<button class="btn small ghost" data-restore-job="' + esc(j.id) + '">取回原文</button>' : '') +
+        '<button class="btn small" data-retry-job="' + esc(j.id) + '" data-status="' + j.status + '">' +
+        (j.status === 'failed' ? '重新处理' : '查看处理进度') + '</button></div></details>';
+    }).join('');
+    box.querySelectorAll('[data-restore-job]').forEach(function (b) {
+      b.onclick = function () {
+        var j = jobs.filter(function (x) { return x.id === b.dataset.restoreJob; })[0];
+        var current = $('inRaw').value;
+        if (current.trim() && current !== j.raw) stashFailedRaw(current);
+        $('inRaw').value = j.raw; $('inMode').value = j.mode || ''; $('inDate').value = j.date || todayKey();
+        saveDraft(); $('inRaw').focus(); toast('原文已取回；原有草稿已暂存');
+      };
+    });
+    box.querySelectorAll('[data-retry-job]').forEach(function (b) {
+      b.onclick = function () {
+        b.disabled = true;
+        var jobId = b.dataset.retryJob;
+        var request = b.dataset.status === 'failed' ? api('POST', '/api/jobs/' + jobId + '/retry') : Promise.resolve({jobId: jobId});
+        request.then(function (r) {
+          var retried = jobs.filter(function (j) { return j.id === jobId; })[0];
+          if (retried && $('inRaw').value === retried.raw) { $('inRaw').value = ''; saveDraft(); }
+          _pendingNew = {t0: Date.now()}; renderLog(); switchPane('log'); pollJob(r.jobId, null);
+        }).catch(function (e) { toast(e.message); }).finally(function () { b.disabled = false; refreshJobs(); });
+      };
+    });
+  }).catch(function (e) {
+    $('unfinishedBox').hidden = false;
+    $('unfinishedBox').textContent = '未完成记录暂时无法读取：' + e.message + '。请稍后刷新，勿清除草稿。';
+  });
+}
+
+function recoverSession() {
+  restoreDraft();
+  try {
+    var j = JSON.parse(localStorage.getItem('sg_job') || 'null');
+    if (j && j.id && !_poller) { _pendingNew = {t0: Date.now()}; pollJob(j.id, null); }
+    var pending = JSON.parse(localStorage.getItem('sg_submission') || 'null');
+    if (pending && pending.raw && !$('inRaw').value.trim()) {
+      $('inRaw').value = pending.raw; $('inMode').value = pending.mode || ''; $('inDate').value = pending.date || todayKey(); saveDraft();
+    }
+    var fr = localStorage.getItem('sg_failed_raw');
+    if (fr && !$('inRaw').value.trim()) {
+      $('inRaw').value = fr;
+      // Clear the recovery slot only after a durable draft copy succeeds.
+      localStorage.setItem('sg_draft', fr);
+      localStorage.removeItem('sg_failed_raw');
+      toast('已找回上次暂存的口述原文');
+    }
+  } catch (e) {}
+}
+
 greet();
-fetch("/api/profile").then(function (r) {
+$('inDate').value = todayKey();
+restoreDraft();
+fetch('/api/profile').then(function (r) {
   if (r.status === 401) showLogin();
-  else {
-    showApp();
-    refreshAll();
-    // 恢复上次未完成的任务(30 分钟内):页面关闭/闪断后继续等结果
-    try {
-      var j = JSON.parse(localStorage.getItem("sg_job") || "null");
-      if (j && j.id && Date.now() - j.t < 30 * 60 * 1000) {
-        $("procHint").textContent = "发现上次未完成的任务,正在续接…";
-        pollJob(j.id, null);
-      } else if (j) localStorage.removeItem("sg_job");
-    } catch (e) {}
-    // 找回上次处理失败时暂存的原文(输入框为空才填,避免覆盖新内容);失败暂存优先于普通草稿
-    try {
-      var fr = localStorage.getItem("sg_failed_raw");
-      if (fr && !$("inRaw").value.trim()) {
-        $("inRaw").value = fr;
-        toast("已找回上次处理失败的口述原文,请检查后重新提交");
-      }
-      localStorage.removeItem("sg_failed_raw");
-    } catch (e) {}
-    restoreDraft();
-  }
-});
+  else if (!r.ok) throw new Error('服务暂时不可用');
+  else { showApp(); refreshAll(); recoverSession(); }
+}).catch(function () { showLogin(); $('loginErr').hidden = false; $('loginErr').textContent = '连接暂时不可用，草稿保留。请稍后重试。'; });

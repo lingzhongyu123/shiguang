@@ -1,6 +1,9 @@
 """解析 GLM 输出 —— 优先 JSON 结构化(v1.2),回退六段式(v1.1 及更早)。"""
 import json
 import re
+import math
+
+from .dates import valid_date
 
 SECTIONS = ["长期背景", "当前目标", "长期偏好", "进行中的项目", "经多次观察得到的模式", "近期变化"]
 
@@ -42,8 +45,20 @@ def _loads_repair(s):
         return json.loads(s)
     except ValueError:
         pass
+    fixed = []
+    quoted = escaped = False
+    for i, ch in enumerate(s):
+        if quoted:
+            if escaped: escaped = False
+            elif ch == '\\': escaped = True
+            elif ch == '"': quoted = False
+        elif ch == '"':
+            quoted = True
+        elif ch == ',' and s[i+1:].lstrip().startswith(('}', ']')):
+            continue
+        fixed.append(ch)
     try:
-        return json.loads(re.sub(r",\s*([}\]])", r"\1", s))
+        return json.loads(''.join(fixed))
     except ValueError:
         return None
 
@@ -81,7 +96,8 @@ def _extract_json(text):
         if end is None:
             return None
         d = _loads_repair(text[start:end])
-        if isinstance(d, dict):
+        # A valid nested summary/memory object is NOT a valid top-level response.
+        if isinstance(d, dict) and isinstance(d.get("polished"), str):
             return d
         pos = start + 1  # 这个 { 不是合法对象,从下一个继续找
 
@@ -170,18 +186,26 @@ VALID_CATS = set(SECTIONS)
 def parse_json_result(text, raw, date, mode):
     """优先解析 JSON 结构化输出;整体失败先打捞字段,再回退旧的六段式解析。"""
     d = _extract_json(text)
+    recovered = False
     if not isinstance(d, dict) and ('"polished"' in text or text.lstrip().startswith("{")):
         salv = _salvage_fields(text)
         if salv.get("polished"):
+            recovered = True
             d = {"polished": salv["polished"],
                  "summary": {"theme": salv.get("theme", ""), "points": []},
                  "understanding": salv.get("understanding", ""),
                  "growth": salv.get("growth", ""),
                  "takeaway": salv.get("takeaway", ""),
                  "advice": salv.get("advice", []),
-                 "memories": salv.get("memories", []),
-                 "events": salv.get("events", [])}
+                 "memories": [],
+                 "events": []}
     if not isinstance(d, dict):
+        if text.lstrip().startswith(('{', '```')) or '"polished"' in text:
+            return {"date": date, "mode": mode or "", "raw": raw, "polished": raw,
+                    "summary": "", "advice": [], "understanding": "", "growth": "",
+                    "takeaway": "", "memories": [], "profileDelta": "", "evi": "低",
+                    "events": [], "skipNote": "", "format": "raw",
+                    "warning": "模型格式异常，已保留原文；未提取记忆或事件。"}
         # 回退旧六段式,并归一成 memories 结构
         legacy = parse_result(text, raw, date, mode)
         memories = []
@@ -195,25 +219,31 @@ def parse_json_result(text, raw, date, mode):
         legacy.setdefault("understanding", "")
         legacy.setdefault("growth", "")
         legacy.setdefault("takeaway", "")
+        if mode == '/只润色':
+            legacy.update(summary='', advice=[], memories=[], memPack=[], events=[], profileDelta='', evi='低')
         return legacy
 
     polished = str(d.get("polished") or "").strip()
     summ = d.get("summary") or {}
     if isinstance(summ, str):
         summary = summ.strip()
-    else:
+    elif isinstance(summ, dict):
         parts = []
         if summ.get("theme"):
             parts.append("主题:" + str(summ["theme"]))
         for p in (summ.get("points") or []):
             parts.append("- " + str(p))
         summary = "\n".join(parts)
+    else:
+        summary = ""
 
     advice = []
-    for a in (d.get("advice") or []):
+    for a in _array(d.get("advice")):
         if isinstance(a, str):
             if a.strip():
                 advice.append(a.strip())
+            continue
+        if not isinstance(a, dict):
             continue
         line = ""
         if a.get("observation"):
@@ -228,9 +258,11 @@ def parse_json_result(text, raw, date, mode):
             advice.append(line)
 
     mem = []
-    for m in (d.get("memories") or []):
+    for m in _array(d.get("memories")):
         if isinstance(m, str):
             m = {"text": m}
+        if not isinstance(m, dict):
+            continue
         txt = str(m.get("text") or "").strip()
         if not txt:
             continue
@@ -240,6 +272,7 @@ def parse_json_result(text, raw, date, mode):
         conf = m.get("confidence")
         try:
             conf = round(float(conf), 2)
+            conf = max(0.0, min(1.0, conf)) if math.isfinite(conf) else None
         except (TypeError, ValueError):
             conf = None
         mem.append({"text": txt, "cat": cat, "confidence": conf,
@@ -250,9 +283,11 @@ def parse_json_result(text, raw, date, mode):
         evi = "低" if not d.get("profile_delta") else "中"
 
     events = []
-    for ev in (d.get("events") or []):
+    for ev in _array(d.get("events")):
         if isinstance(ev, str):
             ev = {"title": ev}
+        if not isinstance(ev, dict):
+            continue
         title = str(ev.get("title") or "").strip()
         if not title:
             continue
@@ -264,10 +299,16 @@ def parse_json_result(text, raw, date, mode):
         except (TypeError, ValueError):
             imp = 1
         events.append({"title": title, "type": etype, "importance": imp,
+                       "date": valid_date(ev.get("date")) or date,
                        "description": str(ev.get("description") or "").strip()})
 
     if not polished and not advice and not mem and not d.get("profile_delta"):
-        polished = text.strip()
+        polished = raw
+
+    if mode == "/只润色":
+        summary, advice, mem, events = "", [], [], []
+        for key in ("understanding", "growth", "takeaway", "profile_delta"):
+            d[key] = ""
 
     return {"date": date, "mode": mode or "", "raw": raw,
             "polished": polished, "summary": summary, "advice": advice,
@@ -277,7 +318,12 @@ def parse_json_result(text, raw, date, mode):
             "memories": mem, "profileDelta": str(d.get("profile_delta") or "").strip(),
             "evi": evi, "events": events,
             "skipNote": str(d.get("skip_note") or "").strip(),
-            "format": "json"}
+            "format": "recovered" if recovered else "json",
+            "warning": "模型格式异常，正文已尽量恢复；未提取记忆或事件，请核对原文。" if recovered else ""}
+
+
+def _array(value):
+    return value if isinstance(value, list) else []
 
 
 def parse_result(text, raw, date, mode):

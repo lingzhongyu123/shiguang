@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="/icon192.png">
 <link rel="icon" type="image/png" href="/icon192.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="/style.css?v=10">
+<link rel="stylesheet" href="/style.css?v=12">
 </head>
 <body>
 
@@ -40,7 +40,7 @@
     <p class="hint">今天做了什么、遇到什么问题、有什么想法……直接说就好,不需要提前组织语言。</p>
     <label class="fld" for="inMode">处理模式</label>
     <select id="inMode">
-      <option value="">默认 · 完整五段流程</option>
+      <option value="">默认 · 日常记录与复盘</option>
       <option value="/只润色">/只润色 · 仅整理正文</option>
       <option value="/快速">/快速 · 整理 + 总结 + 一条建议</option>
       <option value="/深度复盘">/深度复盘 · 详细分析</option>
@@ -50,11 +50,14 @@
       <option value="/月总结">/月总结 · 阶段变化评估</option>
       <option value="/查看画像">/查看画像 · 输出当前画像</option>
     </select>
+    <label class="fld" for="inDate">日志归属日期（补记时可改；总结以此日为止）</label>
+    <input type="date" id="inDate">
     <label class="fld" for="inRaw">说一段,或粘贴口述文字</label>
     <textarea id="inRaw" rows="7" placeholder="口述原文、语音转文字都行,想到哪说到哪……&#10;/周总结、/查看画像等模式可以不填,直接提交。"></textarea>
     <button class="btn" id="btnProcess">提交并处理</button>
-    <p class="hint" id="procHint">提交后由服务端的 GLM 自动整理,约需十几秒。</p>
+    <p class="hint" id="procHint">通常约 30–60 秒。原文保存后可以离开，稍后回来查看。</p>
   </div>
+  <div class="card" id="unfinishedBox" hidden></div>
 </section>
 
 <!-- 日志 -->
@@ -126,6 +129,6 @@
 </nav>
 <div class="toast" id="toast"></div>
 
-<script src="/app.js?v=10"></script>
+<script src="/app.js?v=12"></script>
 </body>
 </html>

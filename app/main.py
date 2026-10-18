@@ -2,7 +2,8 @@ import json
 import os
 import time
 import uuid
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 
 import psycopg2.extras
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
@@ -10,7 +11,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, config, db, export, llm, parser
+from . import auth, config, db, export, llm, parser, dates
 
 app = FastAPI(title="拾光")
 
@@ -43,12 +44,16 @@ def search_related(conn, query_vec, top_k=5, exclude_entry=None):
     q = ("SELECT e.source_type, e.source_id, e.content, en.date,"
          " (e.embedding <=> %s::vector) AS dist FROM embeddings e "
          "LEFT JOIN entries en ON e.source_type='entry' AND en.id=e.source_id "
-         "WHERE (%s IS NULL OR e.source_id != %s OR e.source_type != 'entry') "
+         "LEFT JOIN archive ar ON e.source_type='memory' AND ar.id=e.source_id "
+         "WHERE ((e.source_type='entry' AND en.id IS NOT NULL"
+         " AND e.content=LEFT(COALESCE(NULLIF(en.polished,''),en.raw,''),2000))"
+         " OR (e.source_type='memory' AND ar.status='active')) "
+         "AND (%s IS NULL OR e.source_id != %s OR e.source_type != 'entry') "
          "ORDER BY dist LIMIT 50")
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute(q, (_vec_literal(query_vec), exclude_entry, exclude_entry))
         rows = cur.fetchall()
-    today = datetime.now().date()
+    today = datetime.fromisoformat(dates.today()).date()
     scored = []
     for r in rows:
         sim = max(0.0, 1.0 - float(r["dist"]))
@@ -125,30 +130,76 @@ class ProcessBody(BaseModel):
     raw: str = ""
     mode: str = ""
     date: str = ""
+    request_id: str = ""
 
 
-def _job_update(jid, status=None, stage=None, error=None, entry_id=None):
+def _job_update(jid, status=None, stage=None, error=None, entry_id=None, attempt=None):
     with db.db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE jobs SET status=COALESCE(%s,status), stage=COALESCE(%s,stage),"
                 " error=COALESCE(%s,error), entry_id=COALESCE(%s,entry_id),"
                 " updated_at=to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI:SS')"
-                " WHERE id=%s",
-                (status, stage, error, entry_id, jid))
+                " WHERE id=%s AND (%s IS NULL OR (attempt=%s AND status='running'))",
+                (status, stage, error, entry_id, jid, attempt, attempt))
 
 
 @app.post("/api/process", dependencies=[Depends(auth.require_login)])
 def process_log(body: ProcessBody, tasks: BackgroundTasks):
-    if not body.raw and not body.mode:
+    modes = ('', '/只润色', '/快速', '/深度复盘', '/更新记忆', '/查看画像', '/周总结', '/月总结', '/整理计划')
+    if body.mode not in modes:
+        raise HTTPException(status_code=400, detail="不支持的处理模式")
+    if not body.raw.strip() and body.mode not in ('/查看画像', '/周总结', '/月总结'):
         raise HTTPException(status_code=400, detail="口述内容和模式至少填一个")
-    jid = uuid.uuid4().hex[:12]
+    if body.date and not dates.valid_date(body.date):
+        raise HTTPException(status_code=400, detail="日志日期须为 YYYY-MM-DD")
+    if body.request_id and not re.fullmatch(r'[A-Za-z0-9_-]{16,80}', body.request_id):
+        raise HTTPException(status_code=400, detail="提交标识不合法")
+    jid = body.request_id or uuid.uuid4().hex
+    requested_date = body.date
+    body.date = body.date or dates.today()
     # 原文随任务立即落库:处理失败/重启也不丢口述内容(第一原则:原始日志永久保留)
     with db.db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO jobs(id,status,raw,mode) VALUES(%s,'queued',%s,%s)",
-                        (jid, body.raw, body.mode))
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("INSERT INTO jobs(id,status,raw,mode,date) VALUES(%s,'queued',%s,%s,%s)"
+                        " ON CONFLICT(id) DO NOTHING RETURNING id",
+                        (jid, body.raw, body.mode, body.date))
+            if not cur.fetchone():
+                cur.execute("SELECT raw,mode,date FROM jobs WHERE id=%s", (jid,))
+                old = cur.fetchone()
+                if old['raw'] != body.raw or old['mode'] != body.mode or (requested_date and old['date'] != requested_date):
+                    raise HTTPException(status_code=409, detail="提交标识已用于不同内容")
+                return {"jobId": jid}
     tasks.add_task(_run_process, jid, body)
+    return {"jobId": jid}
+
+
+@app.get("/api/jobs", dependencies=[Depends(auth.require_login)])
+def list_jobs():
+    with db.db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("UPDATE jobs SET status='failed', error='处理已中断，原文已保存，可重新处理'"
+                        " WHERE status IN ('queued','running') AND"
+                        " COALESCE(NULLIF(updated_at,''),created_at)::timestamp <"
+                        " (now() AT TIME ZONE 'Asia/Shanghai') - INTERVAL '15 minutes'")
+            cur.execute("SELECT id,status,stage,error,raw,mode,date,created_at FROM jobs"
+                        " WHERE status IN ('queued','running','failed') ORDER BY created_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+@app.post("/api/jobs/{jid}/retry", dependencies=[Depends(auth.require_login)])
+def retry_job(jid: str, tasks: BackgroundTasks):
+    with db.db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("UPDATE jobs SET status='queued',stage='',error='',attempt=attempt+1,"
+                        " updated_at=to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI:SS')"
+                        " WHERE id=%s AND status='failed' AND entry_id IS NULL RETURNING *", (jid,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=409, detail="任务已在处理或已完成，请刷新查看")
+            body = ProcessBody(raw=row['raw'] or '', mode=row['mode'] or '',
+                               date=row['date'] or row['created_at'][:10])
+    tasks.add_task(_run_process, jid, body, row['attempt'])
     return {"jobId": jid}
 
 
@@ -187,47 +238,71 @@ def get_job(jid: str):
             return out
 
 
-def _run_process(jid, body):
+def _run_process(jid, body, attempt=0):
     try:
-        entry = _process(jid, body)
-        _job_update(jid, status="done", entry_id=entry["id"])
+        with db.db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE jobs SET status='running',"
+                            " updated_at=to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI:SS')"
+                            " WHERE id=%s AND status='queued' AND attempt=%s RETURNING id", (jid, attempt))
+                if not cur.fetchone():
+                    return
+        _process(jid, body, attempt)
     except llm.LLMError as e:
-        _job_update(jid, status="failed", error=str(e))
+        _job_update(jid, status="failed", error=str(e), attempt=attempt)
     except Exception as e:  # 兜底:任务异常不能丢
-        _job_update(jid, status="failed", error="%s: %s" % (type(e).__name__, e))
+        _job_update(jid, status="failed", error="处理异常(%s)，原文已保存，可重新处理" % type(e).__name__, attempt=attempt)
 
 
-def _process(jid, body):
-    date = body.date or datetime.now().strftime("%Y-%m-%d")
+def _process(jid, body, attempt=0):
+    date = body.date or dates.today()
 
     # ① embedding + Context Builder:档案 + 活跃目标 + 最近 3 条 + 语义相关 5 条
-    _job_update(jid, status="running", stage="embedding")
+    _job_update(jid, stage="embedding", attempt=attempt)
     query_vec = None
     with db.db() as conn:
         sections = db.archive_sections(conn, for_prompt=True)["sections"]
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             cur.execute("SELECT * FROM goals WHERE status='active' ORDER BY id")
             goals = [db.goal_to_dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM entries ORDER BY id DESC LIMIT 3")
+            cur.execute("SELECT * FROM entries WHERE mode NOT IN ('/周总结','/月总结','/查看画像')"
+                        " ORDER BY date DESC, id DESC LIMIT 3")
             recent = [db.entry_to_dict(r) for r in cur.fetchall()][::-1]
-        if body.raw and db.vector_ok():
+        if body.raw and body.mode != '/只润色' and db.vector_ok():
             try:
                 query_vec = llm.embed_texts([body.raw[:1500]])[0]
             except llm.LLMError:
                 query_vec = None
         related = search_related(conn, query_vec, top_k=8)  # 跨时间关联是核心能力,多召回几条
+        # 周/月总结按日期范围取全量记录:语义检索召回的只是相关子集,总结必须覆盖整个期间
+        period_entries = None
+        if body.mode in ("/周总结", "/月总结"):
+            since, until = dates.period_window(body.mode, date)
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, date, polished, raw FROM entries WHERE date >= %s AND date <= %s"
+                            " AND COALESCE(NULLIF(mode,''),'') NOT IN ('/周总结','/月总结','/查看画像')"
+                            " ORDER BY date, id", (since, until))
+                period_entries = [{"id": r[0], "date": r[1], "text": r[2] or r[3] or ""}
+                                  for r in cur.fetchall()]
 
     prompt = llm.build_user_prompt(sections, goals, recent, related,
-                                   body.raw.strip(), date, body.mode)
+                                   body.raw.strip(), date, body.mode,
+                                   period_entries=period_entries,
+                                   period_range=dates.period_window(body.mode, date) if period_entries is not None else None)
     deep = body.mode in llm.DEEP_MODES
-    _job_update(jid, stage="generating")
+    _job_update(jid, stage="generating", attempt=attempt)
     reply = llm.call_glm(prompt, deep=deep)  # LLMError 由 _run_process 记入 jobs
-    _job_update(jid, stage="saving")
+    _job_update(jid, stage="saving", attempt=attempt)
     parsed = parser.parse_json_result(reply, body.raw, date, body.mode)
 
     # ② 入库:entry + 待审核记忆 + 事件,同一事务;向量入库在事务提交后单独尝试
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # Lock the job through the save transaction; obsolete attempts cannot archive.
+            cur.execute("SELECT status,attempt FROM jobs WHERE id=%s FOR UPDATE", (jid,))
+            job = cur.fetchone()
+            if not job or job['status'] != 'running' or job['attempt'] != attempt:
+                return None
             cur.execute(
                 "INSERT INTO entries(date,mode,raw,polished,summary,understanding,growth,takeaway,advice,mempack,profile_delta,evidence,llm_reply,prompt_version,model)"
                 " VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
@@ -240,6 +315,8 @@ def _process(jid, body):
                  llm.PROMPT_VERSION, llm.model_for(deep)))
             row = cur.fetchone()
             entry_id = row["id"]
+            cur.execute("UPDATE entries SET processing_warning=%s WHERE id=%s",
+                        (parsed.get('warning', ''), entry_id))
             for m in parsed["memories"]:
                 cur.execute(
                     "INSERT INTO pending_memories(text,cat,src_entry,evi,confidence,note)"
@@ -251,7 +328,10 @@ def _process(jid, body):
                     "INSERT INTO events(title,description,event_type,date,importance,source_entry)"
                     " VALUES(%s,%s,%s,%s,%s,%s)",
                     (ev["title"], ev["description"], ev["type"],
-                     parsed["date"], ev["importance"], entry_id))
+                     ev.get('date') or parsed["date"], ev["importance"], entry_id))
+            cur.execute("UPDATE jobs SET status='done',stage='saving',entry_id=%s,error='',"
+                        " updated_at=to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI:SS')"
+                        " WHERE id=%s", (entry_id, jid))
         conn.commit()  # 核心数据先落库;下面的向量写入失败不回滚它们
         content = parsed["polished"] or parsed["raw"]
         if content and db.vector_ok():
@@ -309,12 +389,42 @@ def get_entry(eid: int):
             return e
 
 
+class EntryPatch(BaseModel):
+    polished: str
+
+
+@app.patch("/api/entries/{eid}", dependencies=[Depends(auth.require_login)])
+def patch_entry(eid: int, body: EntryPatch):
+    """正文纠错:只改 polished,raw 原口述保留;向量同步重建(失败不影响保存)。"""
+    text = body.polished.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="正文不能为空")
+    with db.db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE entries SET polished=%s,derived_stale=TRUE WHERE id=%s RETURNING id", (text, eid))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="日志不存在")
+        conn.commit()
+        if db.vector_ok():
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM embeddings WHERE source_type='entry' AND source_id=%s", (eid,))
+                conn.commit()
+                vec = llm.embed_texts([text[:1500]])[0]
+                store_embedding(conn, "entry", eid, text[:2000], vec)
+                conn.commit()
+            except Exception:
+                conn.rollback()  # 只回滚向量部分
+    return {"ok": True}
+
+
 @app.delete("/api/entries/{eid}", dependencies=[Depends(auth.require_login)])
 def delete_entry(eid: int):
     with db.db() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM entries WHERE id=%s", (eid,))
-            cur.execute("DELETE FROM embeddings WHERE source_type='entry' AND source_id=%s", (eid,))
+            if db.vector_ok():
+                cur.execute("DELETE FROM embeddings WHERE source_type='entry' AND source_id=%s", (eid,))
     return {"ok": True}
 
 
@@ -330,6 +440,7 @@ def list_pending():
 
 class ConfirmBody(BaseModel):
     cat: str
+    text: str | None = None
 
 
 @app.post("/api/pending/{pid}/confirm", dependencies=[Depends(auth.require_login)])
@@ -342,36 +453,28 @@ def confirm_pending(pid: int, body: ConfirmBody):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="待审核记忆不存在")
+            row = dict(row)
+            if body.text is not None:
+                if not body.text.strip():
+                    raise HTTPException(status_code=400, detail="记忆内容不能为空")
+                row['text'] = body.text.strip()
+            if row['src_entry']:
+                cur.execute("SELECT derived_stale FROM entries WHERE id=%s", (row['src_entry'],))
+                source = cur.fetchone()
+                if source and source['derived_stale'] and body.text is None:
+                    raise HTTPException(status_code=409, detail="来源正文已修改，请核对并提交记忆文字")
             cur.execute("SELECT id, source_entries FROM archive WHERE section=%s AND text=%s",
                         (body.cat, row["text"]))
             existing = cur.fetchone()
-            today = datetime.now().strftime("%Y-%m-%d")
-            if not existing and db.vector_ok():
-                # 语义去重:与既有记忆高度相似 → 并入那条而不是新建
-                try:
-                    vec = llm.embed_texts([row["text"][:1000]])[0]
-                    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur2:
-                        cur2.execute(
-                            "SELECT source_id, 1-(embedding <=> %s::vector) AS sim"
-                            " FROM embeddings WHERE source_type='memory'"
-                            " ORDER BY embedding <=> %s::vector LIMIT 1",
-                            (_vec_literal(vec), _vec_literal(vec)))
-                        hit = cur2.fetchone()
-                    if hit and float(hit["sim"]) > 0.90:
-                        cur.execute("SELECT id, source_entries, section FROM archive WHERE id=%s",
-                                    (hit["source_id"],))
-                        existing = cur.fetchone()
-                except Exception:
-                    conn.rollback()
-                    cur.execute("SELECT id, source_entries FROM archive WHERE section=%s AND text=%s",
-                                (body.cat, row["text"]))
-                    existing = cur.fetchone()
+            today = dates.today()
+            # Semantic similarity cannot prove equivalence (especially negation).
+            # Only exact, same-section matches are merged automatically.
             if existing:
                 # 同一记忆再次被确认:累积证据链而不是跳过
                 srcs = list(existing["source_entries"] or [])
                 if row["src_entry"] and row["src_entry"] not in srcs:
                     srcs.append(row["src_entry"])
-                cur.execute("UPDATE archive SET source_entries=%s, last_verified=%s WHERE id=%s",
+                cur.execute("UPDATE archive SET source_entries=%s, last_verified=%s,status='active' WHERE id=%s",
                             (srcs, today, existing["id"]))
                 aid = existing["id"]
             else:
@@ -381,8 +484,8 @@ def confirm_pending(pid: int, body: ConfirmBody):
                     " VALUES(%s,%s,%s,%s,%s) RETURNING id",
                     (body.cat, row["text"], src, row["confidence"], today))
                 aid = cur.fetchone()["id"]
-            cur.execute("UPDATE pending_memories SET status='archived', cat=%s WHERE id=%s",
-                        (body.cat, pid))
+            cur.execute("UPDATE pending_memories SET status='archived', cat=%s,text=%s WHERE id=%s",
+                        (body.cat, row['text'], pid))
         conn.commit()  # 核心数据(确认的记忆)先落库;向量只是索引,失败不应回滚事实
         if not existing and db.vector_ok():
             # 记忆也进向量库,供语义检索;独立事务,失败可接受
@@ -420,7 +523,7 @@ def set_archive_status(aid: int, body: ArchiveStatusBody):
                         " WHERE id=%s", (body.status, aid))
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="记忆不存在")
-            if body.status == "deprecated":
+            if body.status == "deprecated" and db.vector_ok():
                 cur.execute("DELETE FROM embeddings WHERE source_type='memory' AND source_id=%s", (aid,))
     return {"ok": True}
 
@@ -614,18 +717,31 @@ class ProfileBody(BaseModel):
 
 @app.put("/api/profile", dependencies=[Depends(auth.require_login)])
 def put_profile(body: ProfileBody):
+    if any('## ' + section not in body.text for section in config.SECTIONS):
+        raise HTTPException(status_code=400, detail="请保留全部六个节标题，避免误清空档案")
     sections = parser.parse_profile_textarea(body.text)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(dates.SHANGHAI).strftime("%Y-%m-%d %H:%M")
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("DELETE FROM embeddings WHERE source_type='memory'")
-            cur.execute("DELETE FROM archive")
+            cur.execute("SELECT id,section,text,status FROM archive FOR UPDATE")
+            previous = list(cur.fetchall())
+            kept = set()
             aids = []
             for sec, items in sections.items():
-                for item in items:
+                for item in dict.fromkeys(items):
+                    old = next((r for r in previous if r['section'] == sec and r['text'] == item), None)
+                    if old:
+                        kept.add(old['id'])
+                        cur.execute("UPDATE archive SET status='active' WHERE id=%s", (old['id'],))
+                        continue
                     cur.execute("INSERT INTO archive(section,text,updated) VALUES(%s,%s,%s) RETURNING id",
                                 (sec, item, now))
                     aids.append((cur.fetchone()["id"], item))
+            for old in previous:
+                if old['id'] not in kept and old['status'] == 'active':
+                    cur.execute("UPDATE archive SET status='deprecated',updated=%s WHERE id=%s", (now, old['id']))
+                    if db.vector_ok():
+                        cur.execute("DELETE FROM embeddings WHERE source_type='memory' AND source_id=%s", (old['id'],))
         conn.commit()  # 档案本体先落库;向量重建失败不回滚档案
         if db.vector_ok():
             for aid, item in aids:
@@ -643,7 +759,7 @@ def put_profile(body: ProfileBody):
 def _export_data():
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("SELECT * FROM pending_memories WHERE status='pending' ORDER BY id")
+            cur.execute("SELECT * FROM pending_memories ORDER BY id")
             pending = [db.pending_to_dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM todos ORDER BY id")
             todos = [db.todo_to_dict(r) for r in cur.fetchall()]
@@ -651,12 +767,15 @@ def _export_data():
             events = [db.event_to_dict(r) for r in cur.fetchall()]
             cur.execute("SELECT * FROM goals ORDER BY id")
             goals = [db.goal_to_dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT id,raw,mode,date,created_at FROM jobs WHERE status IN ('queued','running','failed')")
+            unfinished = [dict(r) for r in cur.fetchall()]
             rows = _entries_with_events(conn, limit=None)  # 备份必须全量,不截断
         return {
             "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "profile": db.archive_sections(conn),
             "pending": pending, "todos": todos, "events": events, "goals": goals,
             "rows": rows,
+            "unfinishedJobs": unfinished,
         }
 
 
@@ -702,7 +821,11 @@ async def import_backup(request: Request):
     if not isinstance(d, dict) or "entries" not in d or "profile" not in d:
         raise HTTPException(status_code=400, detail="不是有效的拾光备份格式")
     n_entries = n_pending = n_todos = 0
-    imported_events = set()  # 本次已导入事件 (title,description):顶层 events 是全量
+    entry_map = {}
+    imported_events = {
+        (ev.get('title', ''), ev.get('description', ''), ev.get('date') or '')
+        for entry in d.get('entries', []) for ev in entry.get('events', [])
+    }  # 顶层是内嵌事件的副本；兼容旧备份两处都缺日期的情形。
     # (含各日志内嵌的),同一次导入不能插两遍
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
@@ -710,14 +833,18 @@ async def import_backup(request: Request):
                 # 幂等:同一 (date, raw) 的日志已存在则跳过,重复导入不翻倍;
                 # 纯模式条目(raw 为空)用 (date, polished) 判重
                 if e.get("raw"):
-                    cur.execute("SELECT 1 FROM entries WHERE date=%s AND raw=%s",
-                                (e.get("date", ""), e.get("raw", "")))
-                    if cur.fetchone():
+                    cur.execute("SELECT id FROM entries WHERE date=%s AND raw=%s AND mode=%s ORDER BY id LIMIT 1",
+                                (e.get("date", ""), e.get("raw", ""), e.get('mode', '')))
+                    existing = cur.fetchone()
+                    if existing:
+                        entry_map[e.get('id')] = existing['id']
                         continue
                 elif e.get("polished"):
-                    cur.execute("SELECT 1 FROM entries WHERE date=%s AND polished=%s",
-                                (e.get("date", ""), e.get("polished", "")))
-                    if cur.fetchone():
+                    cur.execute("SELECT id FROM entries WHERE date=%s AND polished=%s AND mode=%s ORDER BY id LIMIT 1",
+                                (e.get("date", ""), e.get("polished", ""), e.get('mode', '')))
+                    existing = cur.fetchone()
+                    if existing:
+                        entry_map[e.get('id')] = existing['id']
                         continue
                 cur.execute(
                     "INSERT INTO entries(date,mode,raw,polished,summary,understanding,growth,takeaway,advice,mempack,profile_delta,evidence,prompt_version,model)"
@@ -733,8 +860,11 @@ async def import_backup(request: Request):
                      e.get("promptVersion", e.get("prompt_version", "")),
                      e.get("model", "")))
                 entry_id = cur.fetchone()["id"]
+                entry_map[e.get('id')] = entry_id
+                cur.execute("UPDATE entries SET processing_warning=%s,derived_stale=%s WHERE id=%s",
+                            (e.get('warning', ''), bool(e.get('derivedStale')), entry_id))
                 n_entries += 1
-                for m in e.get("memPack", e.get("mempack", [])):
+                for m in (e.get("memPack", e.get("mempack", [])) if d.get('formatVersion', 1) < 2 else []):
                     line = m if isinstance(m, str) else m.get("text", "")
                     cat, line = parser.split_mem_line(line)
                     if cat is None:
@@ -748,13 +878,13 @@ async def import_backup(request: Request):
                         n_pending += 1
                 for ev in e.get("events", []):
                     if _import_event(cur, ev, e.get("date", ""), entry_id):
-                        imported_events.add((ev.get("title", ""), ev.get("description", "")))
+                        imported_events.add((ev.get("title", ""), ev.get("description", ""), ev.get('date') or e.get('date','')))
             # 顶层 events:导入未被任何日志吸收的孤儿事件(删除过日志的遗留,
             # _entries_with_events 只把挂在现存日志上的事件放进 entries[].events)
             for ev in d.get("events", []):
-                if (ev.get("title", ""), ev.get("description", "")) in imported_events:
+                if (ev.get("title", ""), ev.get("description", ""), ev.get('date') or '') in imported_events:
                     continue
-                _import_event(cur, ev, "", None)
+                _import_event(cur, ev, "", entry_map.get(ev.get('src')))
             prof = d.get("profile", {})
             # 优先用带证据链的 items(v1.2 备份),保真 source/confidence/lastVerified/status
             if isinstance(prof.get("items"), list) and prof["items"]:
@@ -768,7 +898,7 @@ async def import_backup(request: Request):
                             "INSERT INTO archive(section,text,source_entries,confidence,last_verified,status)"
                             " VALUES(%s,%s,%s,%s,%s,%s)",
                             (item["section"], item["text"],
-                             item.get("sources") or [], item.get("confidence"),
+                             list(dict.fromkeys(entry_map[s] for s in (item.get("sources") or []) if s in entry_map and s is not None)), item.get("confidence"),
                              item.get("lastVerified") or "", item.get("status") or "active"))
             else:
                 old_sections = prof.get("sections") or prof  # 兼容原型格式 {节名: [..]}
@@ -787,17 +917,20 @@ async def import_backup(request: Request):
                     cur.execute("SELECT 1 FROM pending_memories WHERE text=%s",
                                 (p.get("text", ""),))
                     if not cur.fetchone():
-                        cur.execute("INSERT INTO pending_memories(text,cat) VALUES(%s,%s)",
-                                    (p.get("text", ""), p.get("cat", "长期背景")))
+                        status = p.get('status', 'pending')
+                        if status not in ('pending', 'archived', 'discarded'): status = 'pending'
+                        cur.execute("INSERT INTO pending_memories(text,cat,src_entry,status,evi,confidence,note) VALUES(%s,%s,%s,%s,%s,%s,%s)",
+                                    (p.get("text", ""), p.get("cat", "长期背景"), entry_map.get(p.get('src')),
+                                     status, p.get('evi',''), p.get('confidence'), p.get('note','')))
                         n_pending += 1
             for t in d.get("todos", []):
                 if t.get("text"):
                     cur.execute("SELECT 1 FROM todos WHERE text=%s AND due=%s",
                                 (t.get("text", ""), t.get("due", "")))
                     if not cur.fetchone():
-                        cur.execute("INSERT INTO todos(text,due,done) VALUES(%s,%s,%s)",
+                        cur.execute("INSERT INTO todos(text,due,done,src_entry) VALUES(%s,%s,%s,%s)",
                                     (t.get("text", ""), t.get("due", ""),
-                                     1 if t.get("done") else 0))
+                                     1 if t.get("done") else 0, entry_map.get(t.get('src'))))
                         n_todos += 1
             for g in d.get("goals", []):
                 if g.get("title"):
@@ -810,6 +943,14 @@ async def import_backup(request: Request):
                             (g.get("title", ""), g.get("description", ""),
                              g.get("status", "active"), int(g.get("progress", 0) or 0),
                              g.get("deadline", "")))
+            for job in d.get('unfinishedJobs', []):
+                jid = job.get('id', '')
+                if not isinstance(jid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', jid):
+                    continue
+                cur.execute("INSERT INTO jobs(id,status,raw,mode,date,error) VALUES(%s,'failed',%s,%s,%s,%s)"
+                            " ON CONFLICT(id) DO NOTHING",
+                            (jid, job.get('raw',''), job.get('mode',''), job.get('date') or dates.today(),
+                             '从备份找回的未完成记录，请核对后重新处理'))
     return {"entries": n_entries, "pending": n_pending, "todos": n_todos}
 
 
