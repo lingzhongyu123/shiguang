@@ -1,11 +1,17 @@
 """GLM 调用与提示词组装 —— System Prompt 从原型移植。"""
 import httpx
 import asyncio
+import logging
+import time
+import uuid
 
 from . import config
 from .parser import SECTIONS
 
 API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+logger = logging.getLogger(__name__)
+NORMAL_TIMEOUT = 180
+DEEP_TIMEOUT = 600
 
 SYSTEM_PROMPT = """# 个人成长日志 Agent｜System Prompt
 
@@ -179,15 +185,26 @@ def build_user_prompt(sections, goals, recent, related, raw, date, mode, period_
 
 
 def call_glm(user_prompt, deep=False):
+    started = time.monotonic()
+    trace = uuid.uuid4().hex[:12]
+    model = model_for(deep)
+    budget = DEEP_TIMEOUT if deep else NORMAL_TIMEOUT
+    logger.warning('glm_start trace=%s model=%s deep=%s budget=%s', trace, model, deep, budget)
     async def bounded():
         try:
-            return await asyncio.wait_for(_call_glm(user_prompt, deep), timeout=600 if deep else 180)
+            return await asyncio.wait_for(_call_glm(user_prompt, deep, trace), timeout=budget)
         except asyncio.TimeoutError:
-            raise LLMError("模型处理超时，原文已保存，可稍后重新处理") from None
-    return asyncio.run(bounded())
+            raise LLMError("模型处理超时（%s，限时 %s 秒），原文已保存，可稍后重新处理" % (model, budget)) from None
+    try:
+        result = asyncio.run(bounded())
+    except Exception as exc:
+        logger.warning('glm_end trace=%s model=%s elapsed=%.2f outcome=%s', trace, model, time.monotonic()-started, type(exc).__name__)
+        raise
+    logger.warning('glm_end trace=%s model=%s elapsed=%.2f outcome=success', trace, model, time.monotonic()-started)
+    return result
 
 
-async def _call_glm(user_prompt, deep=False):
+async def _call_glm(user_prompt, deep=False, trace=''):
     if not config.ZHIPU_API_KEY:
         raise LLMError("未配置 ZHIPU_API_KEY")
     model = model_for(deep)
@@ -204,21 +221,31 @@ async def _call_glm(user_prompt, deep=False):
         body["thinking"] = {"level": "low"}  # 日常模式压推理开销,避免正文被截空
     body["response_format"] = {"type": "json_object"}  # 强制合法 JSON,防止 flash 吐坏格式
     headers = {"Authorization": "Bearer " + config.ZHIPU_API_KEY}
-    # 日常(flash)2.5 分钟快速失败 + 允许一次超时重试(flash 正常几秒到几十秒,
-    # 重试代价小;总等待仍远低于旧版的 10 分钟);深度模式 10 分钟不重试
-    timeout = 600 if deep else 150
+    # 一次生成可使用完整预算；读超时不重新生成，避免浪费已等待的时间。
+    timeout = DEEP_TIMEOUT if deep else NORMAL_TIMEOUT
+    deadline = time.monotonic() + timeout
     last_err = None
     retried_timeout = False
-    for _ in range(3):  # 参数不兼容一次 + 超时重试一次
+    for attempt in range(4):  # 两种参数兼容调整 + 一次快速连接重试
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError()
+        started = time.monotonic()
+        logger.warning('glm_attempt trace=%s attempt=%s remaining=%.2f', trace, attempt+1, remaining)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(remaining, connect=min(10.0, remaining))) as client:
                 r = await client.post(API_URL, json=body, headers=headers)
         except httpx.HTTPError as e:
-            # 深度模式超时/网络错误不重试:重试只会把等待时间翻倍
-            if not deep and not retried_timeout:
+            logger.warning('glm_transport trace=%s attempt=%s elapsed=%.2f error=%s', trace, attempt+1, time.monotonic()-started, type(e).__name__)
+            if (not deep and not retried_timeout
+                    and isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout))
+                    and deadline - time.monotonic() >= 60):
                 retried_timeout = True
                 continue
+            if isinstance(e, httpx.TimeoutException):
+                raise LLMError("模型响应超时（%s），原文已保存，可稍后重新处理" % model) from None
             raise LLMError("GLM 连接失败，原文已保留，请稍后重新处理") from None
+        logger.warning('glm_response trace=%s attempt=%s elapsed=%.2f status=%s', trace, attempt+1, time.monotonic()-started, r.status_code)
         if r.status_code >= 400:
             try:
                 detail = r.json().get("error", {}).get("message", "")
