@@ -24,6 +24,21 @@ class TimeoutTests(unittest.TestCase):
         self.assertEqual(client.post.await_count, 1)
         self.assertGreater(factory.call_args.kwargs['timeout'].read, 175)
 
+    def test_daily_uses_documented_low_reasoning_parameter(self):
+        with patch.object(llm.config, 'GLM_MODEL', 'glm-5.3-flash'):
+            _, client, _ = self.run_call([self.response()])
+        body = client.post.call_args.kwargs['json']
+        self.assertEqual(body['reasoning_effort'], 'low')
+        self.assertEqual(body['thinking'], {'type': 'enabled'})
+        self.assertEqual(body['max_tokens'], 16384)
+
+    def test_deep_keeps_max_reasoning(self):
+        with patch.object(llm.config, 'GLM_MODEL', 'glm-5.3-flash'), patch.object(llm.config, 'GLM_MODEL_DEEP', 'glm-5.3'):
+            _, client, _ = self.run_call([self.response()], deep=True)
+        body = client.post.call_args.kwargs['json']
+        self.assertEqual(body['reasoning_effort'], 'max')
+        self.assertEqual(body['model'], 'glm-5.3')
+
     def test_read_timeout_never_restarts_generation(self):
         client = AsyncMock()
         client.__aenter__.return_value = client
