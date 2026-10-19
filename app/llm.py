@@ -10,8 +10,8 @@ from .parser import SECTIONS
 
 API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 logger = logging.getLogger(__name__)
-NORMAL_TIMEOUT = 180
-DEEP_TIMEOUT = 600
+NORMAL_TIMEOUT = 480
+DEEP_TIMEOUT = 900
 
 SYSTEM_PROMPT = """# 个人成长日志 Agent｜System Prompt
 
@@ -215,7 +215,7 @@ async def _call_glm(user_prompt, deep=False, trace=''):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.5,
-        "max_tokens": 16384,
+        "max_tokens": 32768,
     }
     if "glm-5" in model:
         # GLM-5.3 uses top-level reasoning_effort; thinking.level is ineffective.

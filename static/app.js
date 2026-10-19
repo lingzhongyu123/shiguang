@@ -116,7 +116,7 @@ function greet() {
 }
 /* 任务轮询:提交与页面重开后的恢复共用。
    btn 传 null 表示后台恢复(不锁按钮)。
-   全局只允许一个轮询器;轮询 16 分钟强制超时(服务端 15 分钟收割僵尸任务,
+   全局只允许一个轮询器;轮询 21 分钟强制超时(服务端 20 分钟收割僵尸任务,
    前端兜底防止极端情况下无限轮询)。 */
 var _poller = null;
 
@@ -196,7 +196,7 @@ function pollJob(jid, btn) {
   }
   p.ival = setInterval(function () {
     if (p.busy || _poller !== p) return;
-    if (Date.now() - t0 > 16 * 60 * 1000) {  // 墙钟兜底
+    if (Date.now() - t0 > 21 * 60 * 1000) {  // 墙钟兜底
       finish(null, "任务超时(服务可能重启过),请重新提交");
       return;
     }

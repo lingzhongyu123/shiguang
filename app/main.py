@@ -181,7 +181,7 @@ def list_jobs():
             cur.execute("UPDATE jobs SET status='failed', error='处理已中断，原文已保存，可重新处理'"
                         " WHERE status IN ('queued','running') AND"
                         " COALESCE(NULLIF(updated_at,''),created_at)::timestamp <"
-                        " (now() AT TIME ZONE 'Asia/Shanghai') - INTERVAL '15 minutes'")
+                        " (now() AT TIME ZONE 'Asia/Shanghai') - INTERVAL '20 minutes'")
             cur.execute("SELECT id,status,stage,error,raw,mode,date,created_at FROM jobs"
                         " WHERE status IN ('queued','running','failed') ORDER BY created_at DESC")
             return [dict(r) for r in cur.fetchall()]
@@ -211,14 +211,14 @@ def get_job(jid: str):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="任务不存在或已过期")
-            # 僵尸任务收割:queued/running 超过 15 分钟(服务重启/进程死亡),标记失败。
+            # 僵尸任务收割:queued/running 超过 20 分钟(服务重启/进程死亡),标记失败。
             # 时间比较全部在库端用上海时区完成 —— 进程本地时区不可靠(Render 是 UTC)。
             if row["status"] in ("queued", "running"):
                 cur.execute(
                     "UPDATE jobs SET status='failed',"
                     " error='任务超时(服务可能重启过),请重新提交'"
                     " WHERE id=%s AND status IN ('queued','running')"
-                    " AND (now() AT TIME ZONE 'Asia/Shanghai') - INTERVAL '15 minutes'"
+                    " AND (now() AT TIME ZONE 'Asia/Shanghai') - INTERVAL '20 minutes'"
                     " > COALESCE(NULLIF(updated_at,''), created_at)::timestamp", (jid,))
                 if cur.rowcount:
                     conn.commit()
