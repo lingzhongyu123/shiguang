@@ -32,11 +32,11 @@ class TimeoutTests(unittest.TestCase):
         self.assertEqual(body['thinking'], {'type': 'enabled'})
         self.assertEqual(body['max_tokens'], 16384)
 
-    def test_deep_keeps_max_reasoning(self):
+    def test_deep_uses_high_reasoning(self):
         with patch.object(llm.config, 'GLM_MODEL', 'glm-5.3-flash'), patch.object(llm.config, 'GLM_MODEL_DEEP', 'glm-5.3'):
             _, client, _ = self.run_call([self.response()], deep=True)
         body = client.post.call_args.kwargs['json']
-        self.assertEqual(body['reasoning_effort'], 'max')
+        self.assertEqual(body['reasoning_effort'], 'high')
         self.assertEqual(body['model'], 'glm-5.3')
 
     def test_read_timeout_never_restarts_generation(self):

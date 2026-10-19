@@ -220,7 +220,7 @@ async def _call_glm(user_prompt, deep=False, trace=''):
     if "glm-5" in model:
         # GLM-5.3 uses top-level reasoning_effort; thinking.level is ineffective.
         body["thinking"] = {"type": "enabled"}
-        body["reasoning_effort"] = "max" if deep else "low"
+        body["reasoning_effort"] = "high" if deep else "low"
     body["response_format"] = {"type": "json_object"}  # 强制合法 JSON,防止 flash 吐坏格式
     headers = {"Authorization": "Bearer " + config.ZHIPU_API_KEY}
     # 一次生成可使用完整预算；读超时不重新生成，避免浪费已等待的时间。
