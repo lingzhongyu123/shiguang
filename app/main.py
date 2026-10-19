@@ -115,7 +115,7 @@ def health():
     with db.db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
-    return {"ok": True}
+    return {"ok": True, "version": os.environ.get("RENDER_GIT_COMMIT", "local")}
 
 
 @app.post("/api/logout")
@@ -191,7 +191,7 @@ def list_jobs():
 def retry_job(jid: str, tasks: BackgroundTasks):
     with db.db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("UPDATE jobs SET status='queued',stage='',error='',attempt=attempt+1,"
+            cur.execute("UPDATE jobs SET status='queued',stage='',error='',preview='',attempt=attempt+1,"
                         " updated_at=to_char(now() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD HH24:MI:SS')"
                         " WHERE id=%s AND status='failed' AND entry_id IS NULL RETURNING *", (jid,))
             row = cur.fetchone()
@@ -226,7 +226,7 @@ def get_job(jid: str):
                            "error": "任务超时(服务可能重启过),请重新提交"}
             out = {"id": row["id"], "status": row["status"], "stage": row["stage"],
                    "error": row["error"], "entryId": row["entry_id"],
-                   "raw": row["raw"] or ""}
+                   "raw": row["raw"] or "", "preview": row["preview"] or ""}
             if row["status"] == "done" and row["entry_id"]:
                 cur.execute("SELECT * FROM entries WHERE id=%s", (row["entry_id"],))
                 e = cur.fetchone()
@@ -291,7 +291,19 @@ def _process(jid, body, attempt=0):
                                    period_range=dates.period_window(body.mode, date) if period_entries is not None else None)
     deep = body.mode in llm.DEEP_MODES
     _job_update(jid, stage="generating", attempt=attempt)
-    reply = llm.call_glm(prompt, deep=deep)  # LLMError 由 _run_process 记入 jobs
+    last_preview = [0.0, '']
+    def save_preview(text):
+        if not text or text == last_preview[1] or time.monotonic()-last_preview[0] < 2:
+            return
+        try:
+            with db.db() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("UPDATE jobs SET preview=%s WHERE id=%s AND status='running' AND attempt=%s",
+                                   (text, jid, attempt))
+            last_preview[:] = [time.monotonic(), text]
+        except Exception:
+            pass  # Preview failure must not discard the final result.
+    reply = llm.call_glm(prompt, deep=deep, on_preview=save_preview, mode=body.mode)  # LLMError 由 _run_process 记入 jobs
     _job_update(jid, stage="saving", attempt=attempt)
     parsed = parser.parse_json_result(reply, body.raw, date, body.mode)
 

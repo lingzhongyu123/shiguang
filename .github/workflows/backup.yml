@@ -16,6 +16,8 @@ jobs:
           KEY: ${{ secrets.BACKUP_KEY }}
         run: |
           set -e
+          [ -n "$PASSWORD" ] && [ -n "$KEY" ] || { echo "Missing backup credentials"; exit 1; }
+          trap 'rm -f /tmp/backup.json /tmp/c.txt /tmp/login.json' EXIT
           # Render 免费实例冷启动需要时间:对 502/503/超时反复重试,总容忍约 4 分钟
           login_code=""
           for i in $(seq 1 8); do
@@ -31,6 +33,7 @@ jobs:
           exp_code=$(curl -s -m 300 -b /tmp/c.txt -o /tmp/backup.json -w "%{http_code}" \
             https://shiguang-ryos.onrender.com/api/export/json || echo 000)
           if [ "$exp_code" != "200" ]; then echo "EXPORT FAILED: $exp_code $(head -c 200 /tmp/backup.json)"; exit 1; fi
+          jq -e '(.entries | type == "array") and (.profile | type == "object")' /tmp/backup.json > /dev/null
           echo "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/backup.json \
             -out backup.enc -pass stdin
           rm /tmp/backup.json /tmp/c.txt /tmp/login.json
@@ -43,4 +46,4 @@ jobs:
           if git diff --cached --quiet; then echo "no changes"; exit 0; fi
           git commit -m "daily encrypted backup $(date -u +%F)"
           git push
-          # 只保留最近 30 份密文提交历史之外的由 git 自身裁剪,本地文件始终只有最新一份
+          # Git 历史保留旧密文；不会自动裁剪到 30 份。

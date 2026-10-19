@@ -104,6 +104,7 @@ CREATE INDEX IF NOT EXISTS embeddings_idx ON embeddings USING hnsw (embedding ve
 
 # 已有库的结构迁移(幂等)
 MIGRATIONS = [
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS preview TEXT DEFAULT ''",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS date TEXT DEFAULT ''",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE entries ADD COLUMN IF NOT EXISTS processing_warning TEXT DEFAULT ''",

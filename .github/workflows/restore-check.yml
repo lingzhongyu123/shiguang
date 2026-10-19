@@ -1,0 +1,37 @@
+name: restore-check
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: local-restore-only
+          POSTGRES_DB: shiguang_restore
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Decrypt and restore into disposable database
+        env:
+          BACKUP_KEY: ${{ secrets.BACKUP_KEY }}
+          DATABASE_URL: 'host=127.0.0.1 port=5432 dbname=shiguang_restore user=postgres password=local-restore-only'
+          SHIGUANG_PASSWORD: local-restore-only
+          ZHIPU_API_KEY: ''
+        run: |
+          set -eu
+          test -n "$BACKUP_KEY"
+          trap 'rm -f /tmp/shiguang-restore.json' EXIT
+          openssl enc -d -aes-256-cbc -pbkdf2 -in backup.enc -out /tmp/shiguang-restore.json -pass env:BACKUP_KEY
+          python tools/restore_check.py /tmp/shiguang-restore.json

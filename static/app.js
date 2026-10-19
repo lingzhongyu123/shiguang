@@ -210,6 +210,15 @@ function pollJob(jid, btn) {
         $("procHint").textContent = (btn ? "" : "后台任务:") + (stages[job.stage] || "排队/处理中…") + "(" + sec + "s)";
         var sk = $("pendStage");
         if (sk && _pendingNew) sk.textContent = (stages[job.stage] || "排队/处理中…") + "(" + sec + "s)";
+        if (sk && job.preview) {
+          var preview = $("pendPreview");
+          if (!preview) {
+            preview = document.createElement("div"); preview.id = "pendPreview";
+            preview.style.whiteSpace = "pre-wrap";
+            sk.parentNode.appendChild(preview);
+          }
+          preview.textContent = "生成中的正文（尚未归档）\n\n" + job.preview;
+        }
         return;
       }
       finish(job, job.error);
