@@ -18,7 +18,7 @@ def main():
         with conn.cursor() as cur:
             cur.execute('SELECT count(*) FROM entries')
             if cur.fetchone()[0]: raise SystemExit('Restore database must be empty.')
-    client = TestClient(service.app)
+    client = TestClient(service.app, base_url="https://testserver")
     client.post('/api/login', json={'password':os.environ['SHIGUANG_PASSWORD']}).raise_for_status()
     client.post('/api/import', json=backup).raise_for_status()
     first = client.get('/api/export/json').json()
