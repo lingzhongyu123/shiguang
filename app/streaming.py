@@ -1,13 +1,38 @@
 """Preview only complete JSON string characters; never expose model reasoning."""
 import json
-import re
+import asyncio
+
+
+def _body_start(text):
+    """Walk complete top-level fields, never match nested keys or quoted examples."""
+    decoder = json.JSONDecoder()
+    pos = len(text) - len(text.lstrip())
+    if text[pos:pos+1] != '{':
+        return None
+    pos += 1
+    try:
+        while True:
+            while pos < len(text) and text[pos].isspace(): pos += 1
+            key, pos = decoder.raw_decode(text, pos)
+            if not isinstance(key, str): return None
+            while pos < len(text) and text[pos].isspace(): pos += 1
+            if text[pos:pos+1] != ':': return None
+            pos += 1
+            while pos < len(text) and text[pos].isspace(): pos += 1
+            if key == 'polished':
+                return pos + 1 if text[pos:pos+1] == '"' else None
+            _, pos = decoder.raw_decode(text, pos)
+            while pos < len(text) and text[pos].isspace(): pos += 1
+            if text[pos:pos+1] != ',': return None
+            pos += 1
+    except ValueError:
+        return None
 
 
 def polished_preview(text):
-    match = re.match(r'\s*\{\s*"polished"\s*:\s*"', text)
-    if not match:
+    start = _body_start(text)
+    if start is None:
         return ''
-    start = match.end()
     i = start
     while i < len(text):
         if text[i] == '"':
@@ -31,6 +56,7 @@ async def collect_response(client, url, body, headers, callback, metrics):
     content = ''
     finish = None
     complete = False
+    last_preview = ''
     async with client.stream('POST', url, json={**body, 'stream': True, 'stream_options': {'include_usage': True}}, headers=headers) as response:
         if response.status_code >= 400:
             await response.aread()
@@ -57,7 +83,11 @@ async def collect_response(client, url, body, headers, callback, metrics):
             if token:
                 metrics.setdefault('first_content_seconds', round(time.monotonic()-started, 3))
                 content += token
-                callback(polished_preview(content))
+                preview = polished_preview(content)
+                if preview and preview != last_preview:
+                    # Database preview writes must not block cancellation of the model call.
+                    await asyncio.to_thread(callback, preview)
+                    last_preview = preview
             if choice.get('finish_reason'):
                 finish = choice['finish_reason']
     if not complete or finish not in ('stop', 'length'):

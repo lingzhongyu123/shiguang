@@ -24,6 +24,19 @@ def event(delta=None, finish=None):
 
 
 class StreamingTests(unittest.TestCase):
+    def test_body_after_other_fields(self):
+        self.assertEqual(polished_preview('{"summary":{"theme":"x"},"polished":"正文'), '正文')
+
+    def test_nested_body_and_quoted_examples_are_not_preview(self):
+        self.assertEqual(polished_preview('{"summary":{"polished":"错误"}'), '')
+        self.assertEqual(polished_preview(json.dumps({'summary':'"polished":"错误"'})), '')
+
+    def test_preview_is_not_repeated_for_analysis(self):
+        previews = []
+        lines = [event({'content':'{"polished":"正文"'}), event({'content':',"advice":[]}'}), event(finish='stop'), 'data: [DONE]']
+        asyncio.run(collect_response(Client(lines), 'unused', {}, {}, previews.append, {}))
+        self.assertEqual(previews, ['正文'])
+
     def test_partial_escape(self):
         self.assertEqual(polished_preview('{"polished":"你好\\u4'), '你好')
         self.assertEqual(polished_preview('{"polished":"甲\\n乙"'), '甲\n乙')
