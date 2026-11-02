@@ -4,6 +4,7 @@ DB_PATH = os.environ.get("SHIGUANG_DB", os.path.join(os.path.dirname(os.path.dir
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 PASSWORD = os.environ.get("SHIGUANG_PASSWORD", "")
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 GLM_MODEL = os.environ.get("GLM_MODEL", "glm-5.3")
 GLM_MODEL_DEEP = os.environ.get("GLM_MODEL_DEEP", "")  # 深度模式用;留空则同 GLM_MODEL
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "embedding-3")

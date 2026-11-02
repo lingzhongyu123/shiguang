@@ -140,6 +140,8 @@ PROMPT_VERSION = "v2.4-history-context"
 
 
 def model_for(deep=False):
+    if config.DEEPSEEK_API_KEY:
+        return "deepseek-flash"
     return config.GLM_MODEL_DEEP if deep and config.GLM_MODEL_DEEP else config.GLM_MODEL
 
 
@@ -234,8 +236,10 @@ def call_glm(user_prompt, deep=False, on_preview=None, mode="", metrics=None):
 
 async def _call_glm(user_prompt, deep=False, trace='', on_preview=None, mode='', metrics=None):
     metrics = metrics if metrics is not None else {}
-    if not config.ZHIPU_API_KEY:
-        raise LLMError("未配置 ZHIPU_API_KEY")
+    key = config.DEEPSEEK_API_KEY or config.ZHIPU_API_KEY
+    url = "https://api.deepseek.com/chat/completions" if config.DEEPSEEK_API_KEY else API_URL
+    if not key:
+        raise LLMError("未配置模型 API 密钥")
     model = model_for(deep)
     body = {
         "model": model,
@@ -250,8 +254,10 @@ async def _call_glm(user_prompt, deep=False, trace='', on_preview=None, mode='',
         # GLM-5.3 uses top-level reasoning_effort; thinking.level is ineffective.
         body["thinking"] = {"type": "enabled"}
         body["reasoning_effort"] = "high" if deep else "low"
+    if config.DEEPSEEK_API_KEY:
+        body["thinking"] = {"type": "enabled" if deep else "disabled"}
     body["response_format"] = {"type": "json_object"}  # 强制合法 JSON,防止 flash 吐坏格式
-    headers = {"Authorization": "Bearer " + config.ZHIPU_API_KEY}
+    headers = {"Authorization": "Bearer " + key}
     # 一次生成可使用完整预算；读超时不重新生成，避免浪费已等待的时间。
     timeout = DEEP_TIMEOUT if deep else NORMAL_TIMEOUT
     deadline = time.monotonic() + timeout
@@ -266,9 +272,9 @@ async def _call_glm(user_prompt, deep=False, trace='', on_preview=None, mode='',
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(remaining, connect=min(10.0, remaining))) as client:
                 if on_preview is not None:
-                    r = await collect_response(client, API_URL, body, headers, on_preview, metrics)
+                    r = await collect_response(client, url, body, headers, on_preview, metrics)
                 else:
-                    r = await client.post(API_URL, json=body, headers=headers)
+                    r = await client.post(url, json=body, headers=headers)
         except ValueError:
             raise LLMError("模型流式响应中断或格式异常，原文已保存，可重新处理") from None
         except httpx.HTTPError as e:
