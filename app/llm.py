@@ -136,11 +136,20 @@ class LLMError(Exception):
 
 DEEP_MODES = ("/周总结", "/月总结", "/深度复盘")
 
-PROMPT_VERSION = "v2.3-actionable-advice"
+PROMPT_VERSION = "v2.4-history-context"
 
 
 def model_for(deep=False):
     return config.GLM_MODEL_DEEP if deep and config.GLM_MODEL_DEEP else config.GLM_MODEL
+
+
+def history_excerpt(text, limit=2000):
+    """Keep both setup and outcome, explicitly marking omitted middle text."""
+    text = text or ''
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return text[:half] + '\n[中间内容省略，不能据此判断完整经过]\n' + text[-half:]
 
 
 def build_user_prompt(sections, goals, recent, related, raw, date, mode, period_entries=None, period_range=None):
@@ -159,13 +168,21 @@ def build_user_prompt(sections, goals, recent, related, raw, date, mode, period_
                   "\n".join("- " + g["title"] + ("(截止 " + g["deadline"] + ")" if g["deadline"] else "")
                             for g in goals), ""]
     if recent:
-        parts += ["# 近期已归档日志摘要(最近 3 条)", "",
-                  "\n".join("- [%s][日志 #%s] %s" % (e["date"], e.get('id', ''), (e["polished"] or e["raw"] or "")[:120])
+        parts += ["# 近期已归档日志(最近 3 条，超长正文保留开头与结尾)", "",
+                  "\n".join("- [%s][日志 #%s] %s" % (e["date"], e.get('id', ''), history_excerpt(e["polished"] or e["raw"]))
                             for e in recent), ""]
+    recent_ids = {str(e['id']) for e in recent if e.get('id') is not None}
+    related = [r for r in related if not (
+        r['source_type'] == 'entry' and str(r.get('source_id')) in recent_ids)]
     if related:
-        parts += ["# 与本次内容语义相关的历史记录(跨时间段检索,注意跨时间联系)", "",
-                  "\n".join("- [%s][%s #%s] %s" % (r["date"], r["source_type"], r.get('source_id', ''), r["content"][:160])
+        parts += ["# 与本次内容语义相关的历史记录(检索片段，可能不是全文；与近期重复的日志已合并展示)", "",
+                  "\n".join("- [%s][%s #%s] %s" % (r["date"], r["source_type"], r.get('source_id', ''), history_excerpt(r["content"]))
                             for r in related), ""]
+    if recent or related:
+        parts += ["历史使用边界：同一日志无论出现几次都只算一次观察。相关不等于相同问题；"
+                  "先核对情境和限制，再判断延续、变化或矛盾。片段未提及的结果不代表没有发生。"
+                  "优先回应本次口述的新进展；旧建议是否执行、是否有效，没有记录就明确未知，"
+                  "不要假设我没行动而重复布置同一任务。引用历史时写明日期和来源编号。", ""]
     parts += ["---", ""]
     if mode:
         parts += ["本次快捷指令:" + mode, ""]
