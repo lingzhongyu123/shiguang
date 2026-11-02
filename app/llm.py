@@ -255,7 +255,7 @@ async def _call_glm(user_prompt, deep=False, trace='', on_preview=None, mode='',
         body["thinking"] = {"type": "enabled"}
         body["reasoning_effort"] = "high" if deep else "low"
     if config.DEEPSEEK_API_KEY:
-        body["thinking"] = {"type": "enabled" if deep else "disabled"}
+        body["thinking"] = {"type": "enabled"}
     body["response_format"] = {"type": "json_object"}  # 强制合法 JSON,防止 flash 吐坏格式
     headers = {"Authorization": "Bearer " + key}
     # 一次生成可使用完整预算；读超时不重新生成，避免浪费已等待的时间。
