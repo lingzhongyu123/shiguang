@@ -22,12 +22,50 @@ function md(s) {
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
     .replace(/^\s*[-•]\s+/gm, "· ");
 }
+/* 渲染后正文转纯文本:与 md() 同一套标记,去掉格式符,保留段落换行 */
+function mdText(s) {
+  return String(s == null ? "" : s)
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/^\s*[-•]\s+/gm, "· ");
+}
 function toast(msg) {
   var t = $("toast");
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(t._h);
   t._h = setTimeout(function () { t.classList.remove("show"); }, 2400);
+}
+/* 复制到剪贴板:优先 Clipboard API(需安全上下文),失败或不可用(如 Android QQ/X5
+   内核的旧 WebView)回退到同步 execCommand 复制。 */
+function legacyCopy(text) {
+  var ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  var sel = document.getSelection();
+  var saved = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+  ta.select();
+  try { ta.setSelectionRange(0, text.length); } catch (e) {}
+  var ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  if (saved) { try { sel.removeAllRanges(); sel.addRange(saved); } catch (e) {} }
+  return ok;
+}
+function copyText(text) {
+  if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+    return Promise.resolve(navigator.clipboard.writeText(text)).then(
+      function () { return true; },
+      function () { return legacyCopy(text); }
+    );
+  }
+  return Promise.resolve(legacyCopy(text));
 }
 function api(method, path, body) {
   var opt = { method: method, headers: {} };
@@ -361,8 +399,11 @@ function renderLog() {
         '<button' + (tab === "复盘" ? ' class="active"' : "") + ' data-et="复盘">复盘</button>' +
         '<button' + (tab === "记忆" ? ' class="active"' : "") + ' data-et="记忆">记忆</button>' +
         '<button' + (tab === "画像" ? ' class="active"' : "") + ' data-et="画像">画像</button></div>';
+      var hasBody = e.polished && e.polished.trim();
       card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + ">" + md(e.polished || "(无正文)") +
-        '<div class="row" style="margin-top:8px"><button class="btn small ghost" data-edit="' + e.id + '">编辑正文</button></div></div>';
+        '<div class="row" style="margin-top:8px">' +
+        (hasBody ? '<button class="btn small" data-copy="' + e.id + '">复制正文</button>' : "") +
+        '<button class="btn small ghost" data-edit="' + e.id + '">编辑正文</button></div></div>';
       card += '<div class="ebody" data-eb="复盘"' + (tab === "复盘" ? "" : " hidden") + ">";
       if (e.understanding) card += '<div class="hint" style="color:var(--fg)">理解与回应</div><div>' + md(e.understanding) + "</div>";
       if (e.growth) card += '<div class="hint" style="margin-top:8px;color:var(--fg)">成长观察</div><div>' + md(e.growth) + "</div>";
@@ -455,6 +496,16 @@ function renderLog() {
         toast("已加入行动事项");
         switchPane("mem");
       }).catch(function (err) { toast(err.message); });
+    };
+  });
+  box.querySelectorAll("[data-copy]").forEach(function (b) {
+    b.onclick = function () {
+      var card = b.closest(".ecard");
+      var e = state.entries.filter(function (x) { return String(x.id) === card.dataset.eid; })[0];
+      if (!e || !e.polished) return;
+      copyText(mdText(e.polished)).then(function (ok) {
+        toast(ok ? "正文已复制" : "复制失败,请长按正文手动选择复制");
+      });
     };
   });
   box.querySelectorAll("[data-edit]").forEach(function (b) {
