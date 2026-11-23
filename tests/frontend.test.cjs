@@ -90,3 +90,9 @@ test('copyText falls back to legacy copy when Clipboard API unavailable',async()
   const ok=await c.copyText('hello');
   assert.equal(ok,true);
 });
+
+ test('copy body excludes AI notes and preserves narrative',()=>{
+ const {context:c}=harness();
+ assert.equal(c.bodyForCopy('# 今天\n\n正文说到同音字。\n\n注：人名可能存在同音字混淆。\n请核对。'),'今天\n\n正文说到同音字。');
+ assert.equal(c.bodyForCopy('正文\n第二段'),'正文\n第二段');
+ });

@@ -31,6 +31,13 @@ function mdText(s) {
     .replace(/`([^`\n]+)`/g, "$1")
     .replace(/^\s*[-•]\s+/gm, "· ");
 }
+/* AI 在正文末尾追加的注释不进入剪贴板，页面仍保留供核对。 */
+function bodyForCopy(text) {
+  var plain = mdText(text);
+  var note = /^(?:[ \t]*)(?:[（(【\[])?(?:注|备注|说明|转写说明|纠错说明|同音字说明|疑似同音字)[：:]/m;
+  var match = note.exec(plain);
+  return (match ? plain.slice(0, match.index) : plain).trim();
+}
 function toast(msg) {
   var t = $("toast");
   t.textContent = msg;
@@ -503,7 +510,7 @@ function renderLog() {
       var card = b.closest(".ecard");
       var e = state.entries.filter(function (x) { return String(x.id) === card.dataset.eid; })[0];
       if (!e || !e.polished) return;
-      copyText(mdText(e.polished)).then(function (ok) {
+      copyText(bodyForCopy(e.polished)).then(function (ok) {
         toast(ok ? "正文已复制" : "复制失败,请长按正文手动选择复制");
       });
     };
