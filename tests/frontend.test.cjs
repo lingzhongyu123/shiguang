@@ -17,7 +17,7 @@ function harness(opts) {
     if (!nodes.has(id)) nodes.set(id, mkEl());
     return nodes.get(id);
   }
-  const context = vm.createContext({console, Uint8Array, Array, Date, JSON, Math, String,
+  const context = vm.createContext({console, Uint8Array, TextDecoder, FileReader:opts.FileReader, Array, Date, JSON, Math, String,
     crypto:require('node:crypto').webcrypto,
     navigator:opts.navigator,
     document:{getElementById:element,querySelectorAll(){return []},querySelector(){return element('query')},
@@ -96,3 +96,22 @@ test('copyText falls back to legacy copy when Clipboard API unavailable',async()
  assert.equal(c.bodyForCopy('# 今天\n\n正文说到同音字。\n\n注：人名可能存在同音字混淆。\n请核对。'),'今天\n\n正文说到同音字。');
  assert.equal(c.bodyForCopy('正文\n第二段'),'正文\n第二段');
  });
+
+test('memo import preserves existing draft and reads selected TXT',()=>{
+  let reader;
+  const {context:c,element:e,data}=harness({FileReader:class {
+    constructor(){reader=this;}
+    readAsArrayBuffer(){this.result=new TextEncoder().encode('备忘录原文\n第二段').buffer;}
+  }});
+  e('inRaw').value='已有草稿';
+  c.$('fileNoteImport').onchange({target:{files:[{name:'录音.TXT',size:50}],value:'x'}});
+  e('inRaw').value+='继续输入';
+  reader.onload();
+  assert.equal(e('inRaw').value,'已有草稿继续输入\n\n备忘录原文\n第二段');
+  assert.equal(data.get('sg_draft'),e('inRaw').value);
+});
+test('memo decoding handles UTF16 and GB encoded Chinese',()=>{
+  const {context:c}=harness();
+  assert.equal(c.decodeNote(Uint8Array.from([255,254,45,78]).buffer),'中');
+  assert.equal(c.decodeNote(Uint8Array.from([214,208,206,196]).buffer),'中文');
+});

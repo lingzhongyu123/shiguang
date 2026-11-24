@@ -898,3 +898,35 @@ fetch('/api/profile').then(function (r) {
   else if (!r.ok) throw new Error('服务暂时不可用');
   else { showApp(); refreshAll(); recoverSession(); }
 }).catch(function () { showLogin(); $('loginErr').hidden = false; $('loginErr').textContent = '连接暂时不可用，草稿保留。请稍后重试。'; });
+
+/* 备忘录文本先加入草稿，保留导入时输入框内已有内容。 */
+function decodeNote(buffer) {
+  var bytes = new Uint8Array(buffer);
+  if (bytes[0] === 255 && bytes[1] === 254) return new TextDecoder('utf-16le').decode(bytes);
+  if (bytes[0] === 254 && bytes[1] === 255) return new TextDecoder('utf-16be').decode(bytes);
+  try { return new TextDecoder('utf-8', {fatal: true}).decode(bytes); }
+  catch (e) { return new TextDecoder('gb18030', {fatal: true}).decode(bytes); }
+}
+$('btnNoteImport').onclick = function () { $('fileNoteImport').click(); };
+$('fileNoteImport').onchange = function (event) {
+  var file = event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  if (!/\.txt$/i.test(file.name)) { toast('请在备忘录中导出 TXT 文件后选择'); return; }
+  if (file.size > 1024 * 1024) { toast('文本超过 1MB，请拆分后导入'); return; }
+  var reader = new FileReader();
+  reader.onerror = function () { toast('文件读取失败，请重新选择'); };
+  reader.onload = function () {
+    try {
+      var text = decodeNote(reader.result).replace(/^\uFEFF/, '');
+      if (!text.trim()) { toast('这个文件没有文字'); return; }
+      if (text.indexOf('\u0000') !== -1) { toast('无法识别文本编码，请重新导出 TXT'); return; }
+      var input = $('inRaw');
+      input.value = input.value + (input.value ? '\n\n' : '') + text;
+      saveDraft();
+      input.focus();
+      toast('文字已加入草稿，请核对内容和日志日期后提交');
+    } catch (e) { toast('导入失败，请确认文件为 TXT 文本'); }
+  };
+  reader.readAsArrayBuffer(file);
+};

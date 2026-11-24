@@ -54,6 +54,8 @@
     <input type="date" id="inDate">
     <label class="fld" for="inRaw">说一段,或粘贴口述文字</label>
     <textarea id="inRaw" rows="7" placeholder="口述原文、语音转文字都行,想到哪说到哪……&#10;/周总结、/查看画像等模式可以不填,直接提交。"></textarea>
+    <button class="btn ghost small" id="btnNoteImport">导入备忘录 TXT</button>
+    <input type="file" id="fileNoteImport" accept=".txt,text/plain" hidden>
     <button class="btn" id="btnProcess">提交并处理</button>
     <p class="hint" id="procHint">通常约 30–60 秒。原文保存后可以离开，稍后回来查看。</p>
   </div>
@@ -129,6 +131,6 @@
 </nav>
 <div class="toast" id="toast"></div>
 
-<script src="/app.js?v=16"></script>
+<script src="/app.js?v=17"></script>
 </body>
 </html>
