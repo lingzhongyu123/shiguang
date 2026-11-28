@@ -395,7 +395,8 @@ def memory_revisit(response: Response, previous: int = 0, another: bool = False)
     with db.db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT id, date, LEFT(BTRIM(polished), 800)
+                """SELECT id, date, LEFT(BTRIM(polished), 800),
+                          CASE WHEN NOT COALESCE(derived_stale, FALSE) THEN summary END
                    FROM entries
                    WHERE date < %s AND date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
                      AND COALESCE(mode, '') NOT IN ('/周总结','/月总结','/查看画像')
@@ -408,7 +409,7 @@ def memory_revisit(response: Response, previous: int = 0, another: bool = False)
             row = cur.fetchone()
     if row is None:
         return None
-    return {"id": row[0], "date": row[1], "excerpt": row[2],
+    return {"id": row[0], "date": row[1], "excerpt": row[2], "summary": row[3] or "",
             "anniversary": row[1][-5:] == today[-5:]}
 
 

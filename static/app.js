@@ -198,9 +198,9 @@ function loadRevisit(another) {
     if (another && entry.id === previous) toast("目前只有这一条可以回顾");
     var parts = splitJournalTitle(entry.excerpt);
     var excerpt = bodyForCopy(parts.body) || parts.title;
-    $("revisitTitle").textContent = entry.anniversary ? "那年今日" : "随机回顾";
     $("revisitDate").textContent = entry.date;
-    $("revisitExcerpt").textContent = excerpt.length > 170 ? excerpt.slice(0, 170) + "…" : excerpt;
+    var summary = mdText(entry.summary).trim();
+    $("revisitExcerpt").textContent = summary || (excerpt.length > 170 ? excerpt.slice(0, 170) + "…" : excerpt);
     $("btnRevisitOpen").dataset.source = entry.id;
     bindSourceLinks($("revisitCard"));
     try { sessionStorage.setItem("sg_revisit_last", String(entry.id)); } catch (e) {}
