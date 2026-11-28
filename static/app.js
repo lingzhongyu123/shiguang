@@ -38,6 +38,30 @@ function bodyForCopy(text) {
   var match = note.exec(plain);
   return (match ? plain.slice(0, match.index) : plain).trim();
 }
+function splitJournalTitle(text) {
+  var polished = (text || "").trim();
+  // Only remove explicit titles. A plain first line may be part of the journal.
+  var heading = /^(?:#{1,6}[ \t]+([^\r\n]+)|标题[：:][ \t]*([^\r\n]+)|\*\*([^*\r\n]+)\*\*[ \t]*)(?:\r?\n|$)/.exec(polished);
+  if (!heading) return { title: "", body: polished };
+  return {
+    title: mdText(heading[1] || heading[2] || heading[3]).trim(),
+    body: polished.slice(heading[0].length).trim()
+  };
+}
+function adviceText(text) {
+  // Early records stored the same fields separated by semicolons.
+  return text.replace(/\s*[;；]\s*(?=(?:观察|建议|思考|目的)[:：])/g, "\n");
+}
+function journalCopyText(entry) {
+  var sections = [bodyForCopy(splitJournalTitle(entry.polished).body)];
+  if (entry.understanding) sections.push("理解与回应\n" + mdText(entry.understanding).trim());
+  if (entry.advice && entry.advice.length) {
+    sections.push("AI 建议\n" + entry.advice.map(function (a) {
+      return mdText(adviceText(a)).trim();
+    }).join("\n\n"));
+  }
+  return sections.filter(Boolean).join("\n\n");
+}
 function toast(msg) {
   var t = $("toast");
   t.textContent = msg;
@@ -124,19 +148,31 @@ $("btnLogout").onclick = function () {
 };
 
 /* ---- 历史回顾 ---- */
-function loadRevisit() {
+function loadRevisit(another) {
   var next = $("btnRevisitNext");
   if (next.disabled) return;
   next.disabled = true;
   var previous = 0;
   try { previous = Number(sessionStorage.getItem("sg_revisit_last")) || 0; } catch (e) {}
-  api("GET", "/api/memory-revisit?previous=" + previous).then(function (entry) {
+  api("GET", "/api/memory-revisit?previous=" + previous + "&another=" + Boolean(another)).then(function (entry) {
     $("revisitCard").hidden = !entry;
     if (!entry) return;
-    var excerpt = bodyForCopy(entry.excerpt);
+    if (another && entry.id === previous) toast("目前只有这一条可以回顾");
+    var parts = splitJournalTitle(entry.excerpt);
+    var excerpt = bodyForCopy(parts.body) || parts.title;
     $("revisitTitle").textContent = entry.anniversary ? "那年今日" : "随机回顾";
     $("revisitDate").textContent = entry.date;
     $("revisitExcerpt").textContent = excerpt.length > 170 ? excerpt.slice(0, 170) + "…" : excerpt;
+    var reflection = mdText(entry.reflection).trim();
+    $("revisitReflection").hidden = !reflection;
+    $("revisitResponse").textContent = reflection;
+    var questions = [
+      "回到那天，你最希望有人理解你的哪一点？",
+      "今天再读，那时的哪件小事或感受还值得记住？",
+      "如果那天的感受今天又出现，你希望怎样照顾自己？",
+      "那时你已经做了什么？今天还想留住其中哪一点？"
+    ];
+    $("revisitQuestion").textContent = questions[entry.id % questions.length];
     $("btnRevisitOpen").dataset.source = entry.id;
     bindSourceLinks($("revisitCard"));
     try { sessionStorage.setItem("sg_revisit_last", String(entry.id)); } catch (e) {}
@@ -144,7 +180,7 @@ function loadRevisit() {
     if (!$("revisitCard").hidden) toast("暂时无法加载历史回顾");
   }).finally(function () { next.disabled = false; });
 }
-$("btnRevisitNext").onclick = loadRevisit;
+$("btnRevisitNext").onclick = function () { loadRevisit(true); };
 
 /* ---- 刷新 ---- */
 function refreshAll() {
@@ -380,7 +416,7 @@ function fmtDate(d) {
 }
 
 function entryTitle(e) {  // 折叠态的单行预览
-  var t = (e.polished || "").split("\n")[0].replace(/^#+\s*/, "");
+  var t = splitJournalTitle(e.polished).title || mdText((e.polished || "").split("\n")[0]);
   if (!t) t = (e.summary || "").split("\n")[0];
   return t || "(无正文)";
 }
@@ -430,28 +466,32 @@ function renderLog() {
         '<button' + (tab === "复盘" ? ' class="active"' : "") + ' data-et="复盘">复盘</button>' +
         '<button' + (tab === "记忆" ? ' class="active"' : "") + ' data-et="记忆">记忆</button>' +
         '<button' + (tab === "画像" ? ' class="active"' : "") + ' data-et="画像">画像</button></div>';
-      var hasBody = e.polished && e.polished.trim();
-      card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + ">" + md(e.polished || "(无正文)") +
-        '<div class="row" style="margin-top:8px">' +
-        (hasBody ? '<button class="btn small" data-copy="' + e.id + '">复制正文</button>' : "") +
-        '<button class="btn small ghost" data-edit="' + e.id + '">编辑正文</button></div></div>';
-      card += '<div class="ebody" data-eb="复盘"' + (tab === "复盘" ? "" : " hidden") + ">";
-      if (e.understanding) card += '<div class="hint" style="color:var(--fg)">理解与回应</div><div>' + md(e.understanding) + "</div>";
-      if (e.growth) card += '<div class="hint" style="margin-top:8px;color:var(--fg)">成长观察</div><div>' + md(e.growth) + "</div>";
-      if (e.summary) card += '<div class="hint" style="margin-top:8px;color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
-      if (e.advice && e.advice.length) {
-        card += '<div class="hint" style="margin-top:8px">观察与建议:</div><ul class="plain">';
+      var journal = splitJournalTitle(e.polished);
+      var hasAdvice = e.advice && e.advice.length;
+      card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + '">' +
+        '<div class="row journal-actions">' +
+        (journal.title ? '<button class="btn small ghost" data-copy-title="' + e.id + '">复制标题</button>' : "") +
+        (journal.body ? '<button class="btn small" data-copy="' + e.id + '">复制正文</button>' : "") +
+        '<button class="btn small ghost" data-edit="' + e.id + '">编辑正文</button></div>' +
+        '<div>' + md(journal.body || "(无正文)") + '</div>';
+      if (e.understanding || hasAdvice) card += '<div class="journal-response">';
+      if (e.understanding) card += '<h3>理解与回应</h3><div>' + md(e.understanding) + '</div>';
+      if (hasAdvice) {
+        card += '<h3>AI 建议</h3><ul class="plain">';
         e.advice.forEach(function (a, i) {
-          // 观察/建议/思考/目的分行展示;旧数据是分号分隔的,展示时同样拆行
-          if (a.indexOf("\n") < 0 && /观察:[^;]+;/.test(a)) a = a.replace(/;/g, "\n");
-          var html = esc(a).replace(/\n/g, "<br>")
-            .replace(/(^|<br>)(观察|建议|思考|目的):/g, '$1<b>$2:</b>');
+          var html = md(adviceText(a)).replace(/\n/g, "<br>")
+            .replace(/(^|<br>)((?:观察|建议|思考|目的)[:：])/g, '$1<b>$2</b>');
           card += '<li><div class="tx">' + html + '</div><button class="btn small ghost" data-todo="' + e.id + ":" + i + '">转为待办</button></li>';
         });
         card += "</ul>";
       }
+      if (e.understanding || hasAdvice) card += '</div>';
+      card += '</div>';
+      card += '<div class="ebody" data-eb="复盘"' + (tab === "复盘" ? "" : " hidden") + ">";
+      if (e.growth) card += '<div class="hint" style="margin-top:8px;color:var(--fg)">成长观察</div><div>' + md(e.growth) + "</div>";
+      if (e.summary) card += '<div class="hint" style="margin-top:8px;color:var(--fg)">内容提炼</div><div>' + md(e.summary) + "</div>";
       if (e.takeaway) card += '<div class="takeaway">“' + esc(e.takeaway) + "”</div>";
-      if (!e.understanding && !e.growth && !e.summary && !e.takeaway && !(e.advice && e.advice.length)) card += '<span class="hint">(本次无复盘内容)</span>';
+      if (!e.growth && !e.summary && !e.takeaway) card += '<span class="hint">(本次无额外复盘内容)</span>';
       card += "</div>";
       card += '<div class="ebody" data-eb="记忆"' + (tab === "记忆" ? "" : " hidden") + ">";
       if (e.mempack && e.mempack.length) {
@@ -520,7 +560,7 @@ function renderLog() {
       var e = state.entries.filter(function (x) { return String(x.id) === parts[0]; })[0];
       if (!e || !e.advice[+parts[1]]) return;
       // 优先取"建议:"那行作为待办;没有则用整条
-      var lines = e.advice[+parts[1]].split("\n");
+      var lines = adviceText(e.advice[+parts[1]]).split("\n");
       var sug = lines.filter(function (l) { return l.indexOf("建议:") === 0; })[0] || lines[0];
       api("POST", "/api/todos", { text: sug.replace(/^建议:\s*/, ""), src_entry: e.id }).then(function () {
         refreshAll();
@@ -529,13 +569,16 @@ function renderLog() {
       }).catch(function (err) { toast(err.message); });
     };
   });
-  box.querySelectorAll("[data-copy]").forEach(function (b) {
+  box.querySelectorAll("[data-copy], [data-copy-title]").forEach(function (b) {
     b.onclick = function () {
       var card = b.closest(".ecard");
       var e = state.entries.filter(function (x) { return String(x.id) === card.dataset.eid; })[0];
-      if (!e || !e.polished) return;
-      copyText(bodyForCopy(e.polished)).then(function (ok) {
-        toast(ok ? "正文已复制" : "复制失败,请长按正文手动选择复制");
+      if (!e) return;
+      var titleOnly = b.hasAttribute("data-copy-title");
+      var text = titleOnly ? splitJournalTitle(e.polished).title : journalCopyText(e);
+      if (!text) { toast("没有可复制的内容"); return; }
+      copyText(text).then(function (ok) {
+        toast(ok ? (titleOnly ? "标题已复制" : "正文已复制") : "复制失败，请长按文字手动复制");
       });
     };
   });

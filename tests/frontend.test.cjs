@@ -79,6 +79,19 @@ test('copy-body button appears only when entry has body',()=>{
   assert.doesNotMatch(e('logList').innerHTML,/data-copy="2"/);
   assert.doesNotMatch(e('logList').innerHTML,/data-copy="3"/);
 });
+test('copies title separately from complete narrative and AI guidance',()=>{
+  const {context:c,element:e}=harness();
+  const entry={id:7,date:'2026-11-28',polished:'# 做了两件事\r\n\r\n正文第一段。\r\n\r\n第二段。\r\n注：人名有同音字。',
+    understanding:'理解第一段。\n\n理解第二段。',advice:['观察: 第一件事;建议: 做一步;目的: 减轻负担','建议：先歇一会\n再决定']};
+  assert.equal(c.splitJournalTitle(entry.polished).title,'做了两件事');
+  assert.equal(c.journalCopyText(entry),
+    '正文第一段。\r\n\r\n第二段。\n\n理解与回应\n理解第一段。\n\n理解第二段。\n\nAI 建议\n观察: 第一件事\n建议: 做一步\n目的: 减轻负担\n\n建议：先歇一会\n再决定');
+  c.state.entries=[entry];c.renderLog();
+  const html=e('logList').innerHTML;
+  assert.match(html,/data-copy-title="7"/);
+  assert.match(html,/data-eb="整理"[\s\S]*第二段。[\s\S]*理解与回应[\s\S]*AI 建议[\s\S]*再决定[\s\S]*data-eb="复盘"/);
+  assert.equal(c.journalCopyText({polished:'我今天走了很久。\n后来回家了。'}),'我今天走了很久。\n后来回家了。');
+});
 test('copyText uses Clipboard API when available',async()=>{
   let copied=null;
   const {context:c}=harness({navigator:{clipboard:{writeText:(t)=>{copied=t;return Promise.resolve();}}}});
