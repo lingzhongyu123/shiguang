@@ -164,7 +164,9 @@ function setScenery() {
     { file: "five-flower-lake", name: "九寨沟五花海", author: "chensiyuan", license: "CC BY-SA 4.0", source: "1_jiuzhaigou_valley_national_park_wu_hua_hai.jpg" },
     { file: "everest", name: "珠穆朗玛峰北坡", author: "Luca Galuzzi", license: "CC BY-SA 2.5", source: "Everest_North_Face_toward_Base_Camp_Tibet_Luca_Galuzzi_2006.jpg" },
     { file: "yosemite", name: "优胜美地山谷", author: "Ted Wakabayashi", license: "公有领域", source: "Tunnel_view,_Yosemite.jpg" },
-    { file: "moraine-lake", name: "加拿大梦莲湖", author: "Mike Boehmer", license: "CC BY 2.0", source: "Moraine_Lake.jpg" }
+    { file: "moraine-lake", name: "加拿大梦莲湖", author: "Mike Boehmer", license: "CC BY 2.0", source: "Moraine_Lake.jpg" },
+    { file: "dolomites", name: "多洛米蒂山脉", author: "BobTanGo", license: "CC BY 4.0", source: "The_Dolomites_from_Seceda.jpg" },
+    { file: "qinghai-lake", name: "青海湖", author: "Jonashtand", license: "CC BY-SA 4.0", source: "202606_Qinghai_Lake_01.jpg" }
   ];
   var previous;
   try { previous = sessionStorage.getItem("sg_scenery"); } catch (e) {}
@@ -175,6 +177,7 @@ function setScenery() {
   var image = new Image();
   image.onload = function () {
     document.body.style.setProperty("--scenery", 'url("' + url + '")');
+    $("app").classList.add("with-scenery");
     var credit = $("sceneryCredit");
     credit.textContent = [scene.name, scene.author, scene.license].filter(Boolean).join(" · ");
     credit.href = "https://commons.wikimedia.org/wiki/File:" + encodeURIComponent(scene.source);
