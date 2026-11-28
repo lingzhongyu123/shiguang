@@ -159,7 +159,12 @@ function setScenery() {
     { file: "huangshan", name: "黄山", author: "Chi King", license: "CC BY 2.0", source: "Huangshan_pic_4.jpg" },
     { file: "zhangjiajie", name: "张家界", author: "Raki_Man", license: "CC BY 3.0", source: "Zhangjiajie_landscape_-_panoramio.jpg" },
     { file: "grand-teton", name: "大提顿国家公园", author: "The People's Internet", license: "CC0 1.0", source: "Grand_Teton_National_Park_Mountains.jpg" },
-    { file: "paradise-valley", name: "天堂谷瀑布（1916）", author: "Mary Vaux Walcott", license: "National Geographic Image Collection", source: "Mary_Vaux_Walcott_-_A_stepped_waterfall_with_Mount_Temple_and_Mount_Hungabee.jpg" }
+    { file: "paradise-valley", name: "天堂谷瀑布（1916）", author: "Mary Vaux Walcott", license: "National Geographic Image Collection", source: "Mary_Vaux_Walcott_-_A_stepped_waterfall_with_Mount_Temple_and_Mount_Hungabee.jpg" },
+    { file: "li-river", name: "桂林漓江", author: "xiquinhosilva", license: "CC BY 2.0", source: "Guilin_Li_River.jpg" },
+    { file: "five-flower-lake", name: "九寨沟五花海", author: "chensiyuan", license: "CC BY-SA 4.0", source: "1_jiuzhaigou_valley_national_park_wu_hua_hai.jpg" },
+    { file: "everest", name: "珠穆朗玛峰北坡", author: "Luca Galuzzi", license: "CC BY-SA 2.5", source: "Everest_North_Face_toward_Base_Camp_Tibet_Luca_Galuzzi_2006.jpg" },
+    { file: "yosemite", name: "优胜美地山谷", author: "Ted Wakabayashi", license: "公有领域", source: "Tunnel_view,_Yosemite.jpg" },
+    { file: "moraine-lake", name: "加拿大梦莲湖", author: "Mike Boehmer", license: "CC BY 2.0", source: "Moraine_Lake.jpg" }
   ];
   var previous;
   try { previous = sessionStorage.getItem("sg_scenery"); } catch (e) {}
