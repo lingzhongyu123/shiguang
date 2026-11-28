@@ -89,6 +89,7 @@ test('copies title separately from complete narrative and AI guidance',()=>{
   c.state.entries=[entry];c.renderLog();
   const html=e('logList').innerHTML;
   assert.match(html,/data-copy-title="7"/);
+  assert.doesNotMatch(html,/人名有同音字/);
   assert.match(html,/data-eb="整理"[\s\S]*第二段。[\s\S]*理解与回应[\s\S]*AI 建议[\s\S]*再决定[\s\S]*data-eb="复盘"/);
   assert.equal(c.journalCopyText({polished:'我今天走了很久。\n后来回家了。'}),'我今天走了很久。\n后来回家了。');
 });

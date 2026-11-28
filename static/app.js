@@ -31,12 +31,15 @@ function mdText(s) {
     .replace(/`([^`\n]+)`/g, "$1")
     .replace(/^\s*[-•]\s+/gm, "· ");
 }
-/* AI 在正文末尾追加的注释不进入剪贴板，页面仍保留供核对。 */
+/* 隐藏旧整理稿末尾的 AI 附注，保留正文原有的 Markdown。 */
+function withoutJournalNotes(text) {
+  var lines = text.split("\n");
+  var note = /^(?:[（(【\[])?(?:注|备注|说明|转写说明|纠错说明|同音字说明|疑似同音字)(?:[】）)\]])?\s*[：:]/;
+  var start = lines.findIndex(function (line) { return note.test(mdText(line).trim()); });
+  return (start < 0 ? text : lines.slice(0, start).join("\n")).trim();
+}
 function bodyForCopy(text) {
-  var plain = mdText(text);
-  var note = /^(?:[ \t]*)(?:[（(【\[])?(?:注|备注|说明|转写说明|纠错说明|同音字说明|疑似同音字)[：:]/m;
-  var match = note.exec(plain);
-  return (match ? plain.slice(0, match.index) : plain).trim();
+  return mdText(withoutJournalNotes(text));
 }
 function splitJournalTitle(text) {
   var polished = (text || "").trim();
@@ -498,13 +501,14 @@ function renderLog() {
         '<button' + (tab === "记忆" ? ' class="active"' : "") + ' data-et="记忆">记忆</button>' +
         '<button' + (tab === "画像" ? ' class="active"' : "") + ' data-et="画像">画像</button></div>';
       var journal = splitJournalTitle(e.polished);
+      var visibleBody = withoutJournalNotes(journal.body);
       var hasAdvice = (e.advice || []).some(function (a) { return Boolean(adviceText(a)); });
       card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + '">' +
         '<div class="row journal-actions">' +
         (journal.title ? '<button class="btn small ghost" data-copy-title="' + e.id + '">复制标题</button>' : "") +
-        (journal.body ? '<button class="btn small" data-copy="' + e.id + '">复制正文</button>' : "") +
+        (visibleBody ? '<button class="btn small" data-copy="' + e.id + '">复制正文</button>' : "") +
         '<button class="btn small ghost" data-edit="' + e.id + '">编辑正文</button></div>' +
-        '<div>' + md(journal.body || "(无正文)") + '</div>';
+        '<div>' + md(visibleBody || "(无正文)") + '</div>';
       if (e.understanding || hasAdvice) card += '<div class="journal-response">';
       if (e.understanding) card += '<h3>理解与回应</h3><div>' + md(e.understanding) + '</div>';
       if (hasAdvice) {
