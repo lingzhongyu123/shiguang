@@ -158,7 +158,8 @@ function setScenery() {
   var scenes = [
     { file: "huangshan", name: "黄山", author: "Chi King", license: "CC BY 2.0", source: "Huangshan_pic_4.jpg" },
     { file: "zhangjiajie", name: "张家界", author: "Raki_Man", license: "CC BY 3.0", source: "Zhangjiajie_landscape_-_panoramio.jpg" },
-    { file: "grand-teton", name: "大提顿国家公园", author: "The People's Internet", license: "CC0 1.0", source: "Grand_Teton_National_Park_Mountains.jpg" }
+    { file: "grand-teton", name: "大提顿国家公园", author: "The People's Internet", license: "CC0 1.0", source: "Grand_Teton_National_Park_Mountains.jpg" },
+    { file: "paradise-valley", name: "天堂谷瀑布（1916）", author: "Mary Vaux Walcott", license: "National Geographic Image Collection", source: "Mary_Vaux_Walcott_-_A_stepped_waterfall_with_Mount_Temple_and_Mount_Hungabee.jpg" }
   ];
   var previous;
   try { previous = sessionStorage.getItem("sg_scenery"); } catch (e) {}
