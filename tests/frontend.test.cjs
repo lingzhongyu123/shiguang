@@ -92,6 +92,13 @@ test('copies title separately from complete narrative and AI guidance',()=>{
   assert.match(html,/data-eb="整理"[\s\S]*第二段。[\s\S]*理解与回应[\s\S]*AI 建议[\s\S]*再决定[\s\S]*data-eb="复盘"/);
   assert.equal(c.journalCopyText({polished:'我今天走了很久。\n后来回家了。'}),'我今天走了很久。\n后来回家了。');
 });
+test('old reflection questions stay out of journal copy and leave advice intact',()=>{
+  const {context:c}=harness();
+  const text=c.journalCopyText({polished:'正文。',understanding:'你已经尝试过了。',
+    advice:['观察: 事情很多;建议: 留一件明天做;思考: 今天做了多少？;目的: 留点余力',
+      '**值得思考的问题：**\n还能再做一件吗？', '建议：和同伴约时间。']});
+  assert.equal(text,'正文。\n\n理解与回应\n你已经尝试过了。\n\nAI 建议\n观察: 事情很多\n建议: 留一件明天做\n目的: 留点余力\n\n建议：和同伴约时间。');
+});
 test('copyText uses Clipboard API when available',async()=>{
   let copied=null;
   const {context:c}=harness({navigator:{clipboard:{writeText:(t)=>{copied=t;return Promise.resolve();}}}});

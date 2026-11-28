@@ -281,15 +281,39 @@ textarea:focus, input:focus, select:focus { outline: none; box-shadow: 0 0 0 3px
 .revisit h2 { margin: 0; }
 .revisit .row { justify-content: space-between; align-items: center; }
 #revisitExcerpt { white-space: pre-wrap; overflow-wrap: anywhere; }
-.revisit-reflection, .journal-response {
+.journal-response {
   background: var(--accent-soft);
   border-radius: 8px;
   padding: 12px;
   overflow-wrap: anywhere;
 }
-.revisit-reflection p { margin: 6px 0 0; white-space: pre-wrap; }
-.revisit-question { margin: 12px 0; font-weight: 600; }
 .journal-actions { margin-bottom: 12px; }
 .journal-response { margin-top: 14px; }
 .journal-response h3 { font-size: inherit; margin: 10px 0 6px; }
 .journal-response h3:first-child { margin-top: 0; }
+
+#app::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(rgba(52, 64, 60, .62), var(--bg)), var(--scenery, none) center / cover no-repeat;
+  pointer-events: none;
+}
+#sceneryHeader {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: clamp(132px, 37vw, 226px);
+  padding: 16px;
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
+  border: 0;
+  border-radius: 0 0 14px 14px;
+  background: linear-gradient(180deg, rgba(20, 37, 44, .06), rgba(13, 24, 30, .90) 100%),
+    var(--scenery, none) center / cover no-repeat, #33474c;
+  color: #fff;
+}
+#sceneryHeader h1 { font-size: clamp(25px, 6vw, 34px); }
+#sceneryHeader .sub { color: #f6f5f0; }
+.scenery-credit { color: #fff; font-size: 11px; margin-top: 6px; align-self: flex-start; }

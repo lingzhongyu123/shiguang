@@ -50,16 +50,23 @@ function splitJournalTitle(text) {
 }
 function adviceText(text) {
   // Early records stored the same fields separated by semicolons.
-  return text.replace(/\s*[;；]\s*(?=(?:观察|建议|思考|目的)[:：])/g, "\n");
+  var fields = text.replace(/[ \t]*[;；][ \t]*(?=(?:观察|建议|值得思考的问题|思考问题|思考|目的)[:：])/g, "\n");
+  var inQuestion = false;
+  return fields.split(/\r?\n/).filter(function (line) {
+    var label = line.trim().replace(/^(?:#+\s+|[-•]\s+)+/, "").replace(/\*\*|【|】/g, "");
+    if (/^(?:值得思考的问题|思考问题|思考)(?:\s*[：:]|\s*$)/.test(label)) {
+      inQuestion = true;
+      return false;
+    }
+    if (/^(?:观察|建议|目的)\s*[：:]/.test(label)) inQuestion = false;
+    return !inQuestion;
+  }).join("\n").trim();
 }
 function journalCopyText(entry) {
   var sections = [bodyForCopy(splitJournalTitle(entry.polished).body)];
   if (entry.understanding) sections.push("理解与回应\n" + mdText(entry.understanding).trim());
-  if (entry.advice && entry.advice.length) {
-    sections.push("AI 建议\n" + entry.advice.map(function (a) {
-      return mdText(adviceText(a)).trim();
-    }).join("\n\n"));
-  }
+  var advice = (entry.advice || []).map(function (a) { return mdText(adviceText(a)).trim(); }).filter(Boolean);
+  if (advice.length) sections.push("AI 建议\n" + advice.join("\n\n"));
   return sections.filter(Boolean).join("\n\n");
 }
 function toast(msg) {
@@ -147,6 +154,31 @@ $("btnLogout").onclick = function () {
   api("POST", "/api/logout").then(function () { location.reload(); });
 };
 
+function setScenery() {
+  var scenes = [
+    { file: "huangshan", name: "黄山", author: "Chi King", license: "CC BY 2.0", source: "Huangshan_pic_4.jpg" },
+    { file: "zhangjiajie", name: "张家界", author: "Raki_Man", license: "CC BY 3.0", source: "Zhangjiajie_landscape_-_panoramio.jpg" },
+    { file: "grand-teton", name: "大提顿国家公园", author: "The People's Internet", license: "CC0 1.0", source: "Grand_Teton_National_Park_Mountains.jpg" }
+  ];
+  var previous;
+  try { previous = sessionStorage.getItem("sg_scenery"); } catch (e) {}
+  var choices = scenes.filter(function (scene) { return scene.file !== previous; });
+  var scene = choices[Math.floor(Math.random() * choices.length)];
+  try { sessionStorage.setItem("sg_scenery", scene.file); } catch (e) {}
+  var url = "/scenery/" + scene.file + ".webp";
+  var image = new Image();
+  image.onload = function () {
+    document.body.style.setProperty("--scenery", 'url("' + url + '")');
+    var credit = $("sceneryCredit");
+    credit.textContent = [scene.name, scene.author, scene.license].filter(Boolean).join(" · ");
+    credit.href = "https://commons.wikimedia.org/wiki/File:" + encodeURIComponent(scene.source);
+    credit.title = "原图及许可 · 网页版已缩放并裁切显示";
+    credit.hidden = false;
+  };
+  image.src = url;
+}
+if (typeof Image !== "undefined") setScenery();
+
 /* ---- 历史回顾 ---- */
 function loadRevisit(another) {
   var next = $("btnRevisitNext");
@@ -163,16 +195,6 @@ function loadRevisit(another) {
     $("revisitTitle").textContent = entry.anniversary ? "那年今日" : "随机回顾";
     $("revisitDate").textContent = entry.date;
     $("revisitExcerpt").textContent = excerpt.length > 170 ? excerpt.slice(0, 170) + "…" : excerpt;
-    var reflection = mdText(entry.reflection).trim();
-    $("revisitReflection").hidden = !reflection;
-    $("revisitResponse").textContent = reflection;
-    var questions = [
-      "回到那天，你最希望有人理解你的哪一点？",
-      "今天再读，那时的哪件小事或感受还值得记住？",
-      "如果那天的感受今天又出现，你希望怎样照顾自己？",
-      "那时你已经做了什么？今天还想留住其中哪一点？"
-    ];
-    $("revisitQuestion").textContent = questions[entry.id % questions.length];
     $("btnRevisitOpen").dataset.source = entry.id;
     bindSourceLinks($("revisitCard"));
     try { sessionStorage.setItem("sg_revisit_last", String(entry.id)); } catch (e) {}
@@ -467,7 +489,7 @@ function renderLog() {
         '<button' + (tab === "记忆" ? ' class="active"' : "") + ' data-et="记忆">记忆</button>' +
         '<button' + (tab === "画像" ? ' class="active"' : "") + ' data-et="画像">画像</button></div>';
       var journal = splitJournalTitle(e.polished);
-      var hasAdvice = e.advice && e.advice.length;
+      var hasAdvice = (e.advice || []).some(function (a) { return Boolean(adviceText(a)); });
       card += '<div class="ebody" data-eb="整理"' + (tab === "整理" ? "" : " hidden") + '">' +
         '<div class="row journal-actions">' +
         (journal.title ? '<button class="btn small ghost" data-copy-title="' + e.id + '">复制标题</button>' : "") +
@@ -479,8 +501,10 @@ function renderLog() {
       if (hasAdvice) {
         card += '<h3>AI 建议</h3><ul class="plain">';
         e.advice.forEach(function (a, i) {
-          var html = md(adviceText(a)).replace(/\n/g, "<br>")
-            .replace(/(^|<br>)((?:观察|建议|思考|目的)[:：])/g, '$1<b>$2</b>');
+          var advice = adviceText(a);
+          if (!advice) return;
+          var html = md(advice).replace(/\n/g, "<br>")
+            .replace(/(^|<br>)((?:观察|建议|目的)[:：])/g, '$1<b>$2</b>');
           card += '<li><div class="tx">' + html + '</div><button class="btn small ghost" data-todo="' + e.id + ":" + i + '">转为待办</button></li>';
         });
         card += "</ul>";

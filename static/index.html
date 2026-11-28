@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="/icon192.png">
 <link rel="icon" type="image/png" href="/icon192.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="/style.css?v=16">
+<link rel="stylesheet" href="/style.css?v=17">
 </head>
 <body>
 
@@ -27,9 +27,10 @@
 </div>
 
 <div class="page" id="app" hidden>
-<header class="app">
+<header class="app" id="sceneryHeader">
   <h1>拾光</h1>
   <div class="sub">记录今天,也理解长期的自己</div>
+  <a class="scenery-credit" id="sceneryCredit" target="_blank" rel="noopener noreferrer" hidden></a>
 </header>
 
 <!-- 记录 -->
@@ -38,11 +39,6 @@
     <div class="row"><h2 id="revisitTitle">随机回顾</h2><button type="button" class="btn ghost small" id="btnRevisitNext">换一条</button></div>
     <p class="hint" id="revisitDate"></p>
     <p id="revisitExcerpt" aria-live="polite"></p>
-    <div class="revisit-reflection" id="revisitReflection" hidden>
-      <strong>当时的回应</strong>
-      <p id="revisitResponse"></p>
-    </div>
-    <p class="revisit-question" id="revisitQuestion"></p>
     <button type="button" class="btn ghost small source-link" id="btnRevisitOpen" data-source="">查看原日志</button>
   </div>
   <div class="card">
@@ -142,6 +138,6 @@
 </nav>
 <div class="toast" id="toast"></div>
 
-<script src="/app.js?v=19"></script>
+<script src="/app.js?v=20"></script>
 </body>
 </html>
