@@ -277,3 +277,7 @@ textarea:focus, input:focus, select:focus { outline: none; box-shadow: 0 0 0 3px
 .source-link { max-width: 100%; text-align: left; white-space: normal; }
 .recovery-raw { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
 .review-notice { padding: 10px; background: var(--accent-soft); border-radius: 8px; margin-bottom: 8px; }
+
+.revisit h2 { margin: 0; }
+.revisit .row { justify-content: space-between; align-items: center; }
+#revisitExcerpt { white-space: pre-wrap; overflow-wrap: anywhere; }

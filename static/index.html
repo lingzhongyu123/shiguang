@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="/icon192.png">
 <link rel="icon" type="image/png" href="/icon192.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="/style.css?v=14">
+<link rel="stylesheet" href="/style.css?v=15">
 </head>
 <body>
 
@@ -34,6 +34,12 @@
 
 <!-- 记录 -->
 <section id="pane-record" class="pane">
+  <div class="card revisit" id="revisitCard" hidden>
+    <div class="row"><h2 id="revisitTitle">随机回顾</h2><button type="button" class="btn ghost small" id="btnRevisitNext">换一条</button></div>
+    <p class="hint" id="revisitDate"></p>
+    <p id="revisitExcerpt" aria-live="polite"></p>
+    <button type="button" class="btn ghost small source-link" id="btnRevisitOpen" data-source="">查看原日志</button>
+  </div>
   <div class="card">
     <div class="greet" id="greet"></div>
     <div class="ask">有什么想记录的?</div>
@@ -131,6 +137,6 @@
 </nav>
 <div class="toast" id="toast"></div>
 
-<script src="/app.js?v=17"></script>
+<script src="/app.js?v=18"></script>
 </body>
 </html>

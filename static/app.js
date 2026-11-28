@@ -99,6 +99,7 @@ function showLogin() {
   $("loginPane").hidden = false;
 }
 function showApp() {
+  loadRevisit();
   $("loginPane").hidden = true;
   $("app").hidden = false;
   $("navTabs").hidden = false;
@@ -121,6 +122,29 @@ $("pwd").addEventListener("keydown", function (e) {
 $("btnLogout").onclick = function () {
   api("POST", "/api/logout").then(function () { location.reload(); });
 };
+
+/* ---- 历史回顾 ---- */
+function loadRevisit() {
+  var next = $("btnRevisitNext");
+  if (next.disabled) return;
+  next.disabled = true;
+  var previous = 0;
+  try { previous = Number(sessionStorage.getItem("sg_revisit_last")) || 0; } catch (e) {}
+  api("GET", "/api/memory-revisit?previous=" + previous).then(function (entry) {
+    $("revisitCard").hidden = !entry;
+    if (!entry) return;
+    var excerpt = bodyForCopy(entry.excerpt);
+    $("revisitTitle").textContent = entry.anniversary ? "那年今日" : "随机回顾";
+    $("revisitDate").textContent = entry.date;
+    $("revisitExcerpt").textContent = excerpt.length > 170 ? excerpt.slice(0, 170) + "…" : excerpt;
+    $("btnRevisitOpen").dataset.source = entry.id;
+    bindSourceLinks($("revisitCard"));
+    try { sessionStorage.setItem("sg_revisit_last", String(entry.id)); } catch (e) {}
+  }).catch(function () {
+    if (!$("revisitCard").hidden) toast("暂时无法加载历史回顾");
+  }).finally(function () { next.disabled = false; });
+}
+$("btnRevisitNext").onclick = loadRevisit;
 
 /* ---- 刷新 ---- */
 function refreshAll() {

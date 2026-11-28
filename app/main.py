@@ -387,6 +387,30 @@ def list_entries():
         return _entries_with_events(conn)
 
 
+@app.get("/api/memory-revisit", dependencies=[Depends(auth.require_login)])
+def memory_revisit(response: Response, previous: int = 0):
+    """Prefer anniversaries, then sample the journal archive."""
+    response.headers["Cache-Control"] = "private, no-store"
+    today = dates.today()
+    with db.db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, date, LEFT(BTRIM(polished), 800)
+                   FROM entries
+                   WHERE date < %s AND date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                     AND COALESCE(mode, '') NOT IN ('/周总结','/月总结','/查看画像')
+                     AND NULLIF(BTRIM(polished), '') IS NOT NULL
+                   ORDER BY (RIGHT(date, 5) = %s) DESC, (id = %s), RANDOM()
+                   LIMIT 1""",
+                (today, today[-5:], previous),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return {"id": row[0], "date": row[1], "excerpt": row[2],
+            "anniversary": row[1][-5:] == today[-5:]}
+
+
 @app.get("/api/entries/{eid}", dependencies=[Depends(auth.require_login)])
 def get_entry(eid: int):
     with db.db() as conn:
